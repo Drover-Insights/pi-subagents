@@ -1,3 +1,4 @@
+import { registerOutstandingWorkReporting } from "./runtime/work-reporting.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "node:fs";
 import type { AgentListEntry } from "./agents/agent-list.ts";
@@ -148,6 +149,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	if (getEffectiveAgentDefinitions().length === 0) return;
 
 	publishRunningSubagentCount(() => runningSubagents.size);
+	const workReporting = registerOutstandingWorkReporting(pi);
 
 	function attachWidgetContext(ctx: ExtensionContext) {
 		widgetManager.attachContext(ctx);
@@ -170,6 +172,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	// Capture the UI context early so the widget keeps a stable slot above tasks.
 	pi.on("session_start", (event, ctx) => {
 		initializeSpawnWidthForSession();
+		void workReporting.start(ctx);
 		latestContext = ctx;
 		resetSubagentBatchStopRequest();
 		applySubagentLineage(ctx);
@@ -345,10 +348,11 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 			eventKeys: Object.keys((event ?? {}) as unknown as Record<string, unknown>),
 			running: runningSubagents.size,
 		});
-		if (stopAfterCurrentSubagentBatch) {
+		if (stopAfterCurrentSubagentBatch && !event.reason) {
 			resetSubagentBatchStopRequest();
 			return;
 		}
+		await workReporting.stop();
 		orchestrator.handleSessionShutdown(ctx);
 
 		moduleAbortController.abort();

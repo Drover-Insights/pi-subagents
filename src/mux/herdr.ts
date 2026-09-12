@@ -514,3 +514,15 @@ export function isHerdrRuntimeAvailable(
 		return false;
 	}
 }
+
+/** Bounded optional metadata/discovery call; CLI owns platform and inherited endpoint resolution. */
+export async function runHerdrJsonAsync(args: string[], env: NodeJS.ProcessEnv): Promise<Record<string, unknown>> {
+	const { stdout } = await execFileAsync(env.HERDR_BIN_PATH || "herdr", args, {
+		encoding: "utf8", env, timeout: 2000, killSignal: "SIGKILL", windowsHide: true,
+		maxBuffer: 1024 * 1024,
+	});
+	const reply = parseHerdrJson(args.slice(0, 2).join(" "), stdout);
+	if (!isRecord(reply)) throw new Error("Malformed Herdr response");
+	if (reply.error) throw formatHerdrApiError("metadata", reply.error, "request failed");
+	return reply;
+}

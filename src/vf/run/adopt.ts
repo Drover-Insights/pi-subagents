@@ -1,3 +1,4 @@
+import { outstandingWork } from "../../runtime/outstanding-work.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { resolveArtifactProjectRoot } from "../../artifact-storage.ts";
 import { runningSubagents, moduleAbortController } from "../../runtime/state.ts";
@@ -295,7 +296,7 @@ function deliverVerifiedRunResult(
 		Date.parse(manifest.createdAt) || Date.now(),
 	);
 	const selection = manifest.result?.selection ?? null;
-	pi.sendMessage(
+	outstandingWork.delivery(manifest.runId.slice(-8), () => pi.sendMessage(
 		{
 			customType: "subagent_result",
 			content: result.summary,
@@ -319,7 +320,7 @@ function deliverVerifiedRunResult(
 			},
 		},
 		{ triggerTurn, deliverAs: "steer" },
-	);
+	));
 }
 
 /**
