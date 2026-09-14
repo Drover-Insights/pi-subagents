@@ -612,6 +612,7 @@ describe("Herdr interactive launch parity", () => {
 			[
 				"---",
 				"name: bg-agent",
+				"auto-exit: false",
 				"session-mode: lineage-only",
 				"trust-project: true",
 				"report-context-usage: false",
@@ -633,6 +634,7 @@ describe("Herdr interactive launch parity", () => {
   printf 'PWD=%s\n' "$PWD"
   printf 'ARGS=%s\n' "$*"
   printf 'CUSTOM_ENV=%s\n' "\${CUSTOM_ENV-}"
+  printf 'AUTO_EXIT=%s\n' "\${PI_SUBAGENT_AUTO_EXIT-}"
   printf 'SURFACE=%s\n' "\${PI_SUBAGENT_SURFACE-}"
 } >> "${childLogFile}"
 `,
@@ -662,6 +664,7 @@ describe("Herdr interactive launch parity", () => {
 			(text) => text.includes("CUSTOM_ENV=") && text.includes("SURFACE="),
 		);
 		assert.equal(running.mode, "background");
+		assert.equal(running.autoExit, true);
 		assert.equal(running.surface, undefined);
 		assert.equal(running.modelContextWindow, 2048);
 		assert.equal(running.reportContextUsage, false);
@@ -670,6 +673,7 @@ describe("Herdr interactive launch parity", () => {
 		const escapedChildCwd = expectedChildCwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 		assert.match(childLog, new RegExp(`PWD=${escapedChildCwd}`));
 		assert.match(childLog, /CUSTOM_ENV=from-background-agent/);
+		assert.match(childLog, /AUTO_EXIT=1/);
 		assert.match(childLog, /SURFACE=\n/);
 		assert.match(childLog, /--no-approve/);
 		assert.match(childLog, /--background-flag/);

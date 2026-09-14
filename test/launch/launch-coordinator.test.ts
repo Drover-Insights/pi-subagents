@@ -1,4 +1,5 @@
 import { coordinateSubagentLaunch } from "../../src/launch/launch-coordinator.ts";
+import { buildBackgroundLaunchPlan } from "../../src/launch/background.ts";
 import {
 	ASSISTANT_MSG,
 	assert,
@@ -16,6 +17,38 @@ import {
 } from "../support/index.ts";
 
 describe("launch coordinator", () => {
+	it("forces auto-exit for background launches even when the agent disables it", async () => {
+		const cwd = createTestDir();
+		mkdirSync(join(cwd, ".pi", "agents"), { recursive: true });
+		writeFileSync(
+			join(cwd, ".pi", "agents", "worker.md"),
+			"---\nname: worker\nmode: background\nauto-exit: false\n---\nWorker body.",
+		);
+		const parentSession = join(cwd, "parent.jsonl");
+		writeFileSync(parentSession, `${JSON.stringify(SESSION_HEADER)}\n`);
+		const plan = await buildBackgroundLaunchPlan(
+			{
+				name: "background-worker",
+				title: "Background worker",
+				task: "Do the work",
+				agent: "worker",
+			},
+			{
+				cwd,
+				sessionManager: {
+					getSessionFile: () => parentSession,
+					getSessionId: () => "parent-session-id",
+				},
+			},
+		);
+
+		assert.equal(plan.launch.prepared.agentDefs?.autoExit, true);
+		assert.equal(plan.launch.envVars.PI_SUBAGENT_AUTO_EXIT, "1");
+		assert.equal(plan.launch.launchMetadata.autoExit, true);
+		assert.match(plan.fullTask, /Complete your task autonomously\./);
+		assert.doesNotMatch(plan.fullTask, /MUST call the subagent_done tool/);
+	});
+
 	it("prepares, seeds, persists, and returns common launch facts", async () => {
 		const cwd = createTestDir();
 		mkdirSync(join(cwd, ".pi", "agents"), { recursive: true });

@@ -356,7 +356,11 @@ export function buildPersistedSubagentLaunchMetadata(
 		...(params.agent ? { agent: params.agent } : {}),
 		mode,
 		sessionMode,
-		...(prepared.agentAutoExit !== undefined ? { autoExit: prepared.agentAutoExit } : {}),
+		...(mode === "background"
+			? { autoExit: true }
+			: prepared.agentAutoExit !== undefined
+				? { autoExit: prepared.agentAutoExit }
+				: {}),
 		parentClosePolicy: resolveSubagentParentClosePolicy(prepared.agentDefs),
 		reportContextUsage: resolveSubagentReportContextUsage(prepared.agentDefs),
 		async: params.async !== false,

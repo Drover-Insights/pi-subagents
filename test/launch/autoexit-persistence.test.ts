@@ -11,7 +11,7 @@ import {
 	writeSubagentLaunchMetadataEntryForTest,
 } from "../support/index.ts";
 
-describe("auto-exit persistence (no headless override leakage)", () => {
+describe("auto-exit persistence (legacy background metadata)", () => {
 	afterEach(() => {
 		resetSubagentStateForTest();
 	});
@@ -65,7 +65,7 @@ describe("auto-exit persistence (no headless override leakage)", () => {
 		assert.equal(metadata!.tools, "read,bash,grep,find,ls", "tools should be preserved");
 	});
 
-	it("correctly reads auto-exit: false on resume", async () => {
+	it("keeps legacy background auto-exit: false metadata readable", async () => {
 		const dir = "/tmp/pi-subagent-test-" + Math.random().toString(16).slice(2);
 		mkdirSync(dir, { recursive: true });
 		const sessionFile = join(dir, "child.jsonl");
@@ -104,13 +104,13 @@ describe("auto-exit persistence (no headless override leakage)", () => {
 			boundarySystemPrompt: true,
 		});
 
-		// Simulate what resume-tool does: read metadata and use autoExit
+		// Legacy metadata remains readable so the resume service can identify the
+		// background mode before applying its forced auto-exit policy.
 		const metadata = readSubagentLaunchMetadataForTest(sessionFile);
 		assert.ok(metadata, "metadata should be readable");
 
-		// Simulate the resume-tool logic
-		const resumedAutoExit = metadata!.autoExit ?? true;
-		assert.equal(resumedAutoExit, false, "resume should honor auto-exit: false");
+		assert.equal(metadata!.mode, "background");
+		assert.equal(metadata!.autoExit, false, "legacy auto-exit should remain readable");
 
 		// Verify model params are also preserved
 		assert.equal(metadata!.modelRef, "zai-messages/glm-5-turbo:low", "modelRef with thinking should be preserved");

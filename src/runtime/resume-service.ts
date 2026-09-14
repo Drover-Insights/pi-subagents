@@ -269,6 +269,11 @@ async function resumeSubagentSessionWithoutWidth(
 		input.thinking,
 		runtime.modelRegistry,
 	);
+	const resumedAutoExit = metadata.mode === "background" ? true : invocationMetadata?.autoExit ?? metadata.autoExit ?? true;
+	const resumedInvocationMetadata =
+		metadata.mode === "background" && invocationMetadata
+			? { ...invocationMetadata, autoExit: resumedAutoExit }
+			: invocationMetadata;
 	const shouldPersistInvocationMetadata = invocationMetadata && invocationMetadata !== invocationMetadataSource;
 	const targetAgent = launchMetadata?.agent ?? metadata.agent ?? input.agent;
 	const targetCwd = launchMetadata?.cwd ?? invocationMetadataSource?.cwd ?? process.cwd();
@@ -425,7 +430,6 @@ async function resumeSubagentSessionWithoutWidth(
 	resumeEnvVars.PI_SUBAGENT_SESSION = sessionFile;
 
 	const resumedAsync = invocationMetadata?.async ?? metadata.async ?? true;
-	const resumedAutoExit = invocationMetadata?.autoExit ?? metadata.autoExit ?? true;
 	resumeEnvVars.PI_SUBAGENT_AUTO_EXIT = resumedAutoExit ? "1" : "";
 	resumeEnvVars.PI_PACKAGE_DIR = "";
 	resumeEnvVars.PI_ARTIFACT_PROJECT_ROOT = getArtifactStorageRoot();
@@ -455,7 +459,7 @@ async function resumeSubagentSessionWithoutWidth(
 		launchEntryCount: entryCountBefore,
 		modelContextWindow: runtime.getContextWindow(invocationMetadata?.modelRef),
 		modelRef: invocationMetadata?.modelRef,
-		launchMetadata: invocationMetadata,
+		launchMetadata: resumedInvocationMetadata,
 	};
 
 	if (metadata.mode === "background") {
@@ -554,7 +558,7 @@ async function resumeSubagentSessionWithoutWidth(
 		if (invocationMetadata.modelSource === "resume-override") {
 			writeSubagentModelStateEntries(sessionFile, invocationMetadata);
 		}
-		writeSubagentLaunchMetadataEntry(sessionFile, invocationMetadata);
+		if (resumedInvocationMetadata) writeSubagentLaunchMetadataEntry(sessionFile, resumedInvocationMetadata);
 	}
 	runtime.runningSubagents.set(id, running);
 	runtime.startWidgetRefresh();
