@@ -1,3 +1,4 @@
+import { outstandingWork } from "./outstanding-work.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { CompletedSubagentResult, RunningSubagent, StartedSubagentToolDetails, SubagentResult } from "../types.ts";
 import { deliverCompletedSubagentResult, routeSubagentOutcome } from "./result-router.ts";
@@ -253,7 +254,7 @@ export function wireSubagentSteerBack(
 			releaseSpawnWidthSlot(running);
 			runningSubagents.delete(running.id);
 			updateWidget();
-			pi.sendMessage(
+			outstandingWork.delivery(running.id, () => pi.sendMessage(
 				{
 					customType: "subagent_result",
 					content: `Sub-agent "${running.name}" error: ${err?.message ?? String(err)}`,
@@ -268,6 +269,6 @@ export function wireSubagentSteerBack(
 					},
 				},
 				{ triggerTurn: true, deliverAs: "steer" },
-			);
+			));
 		});
 }

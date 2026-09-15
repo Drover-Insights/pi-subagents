@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { AgentDefaults } from "../agents/definitions.ts";
 import { getAgentConfigDir } from "../agents/definitions.ts";
+import { isMuxAvailable } from "../mux.ts";
 import { parseTimeoutWarnThreshold } from "../tools/timeout-reminders.ts";
 import type { ParentClosePolicy, RunningSubagent, SubagentParamsInput, SubagentTimeoutBudget } from "../types.ts";
 
@@ -48,6 +49,19 @@ export function resolveSubagentBlocking(
 	agentDefs: AgentDefaults | null,
 ): boolean {
 	return agentDefs?.async === false;
+}
+
+export function shouldUseBackgroundLaunch(
+	params: Pick<SubagentParamsInput, "background">,
+	agentDefs: AgentDefaults | null,
+	hasUI: boolean,
+): boolean {
+	return (
+		agentDefs?.llmAsVerifier === true ||
+		(params.background ?? agentDefs?.mode === "background") ||
+		!hasUI ||
+		!isMuxAvailable()
+	);
 }
 
 function resolveSubagentAsync(params: Partial<SubagentParamsInput>, agentDefs: AgentDefaults | null): boolean {

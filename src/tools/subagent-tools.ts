@@ -7,9 +7,9 @@ import {
 	enforceAgentFrontmatter,
 	getSubagentAgentRequirementError,
 	resolveSubagentBlocking,
+	shouldUseBackgroundLaunch,
 } from "../launch/policy.ts";
 import type { SubagentLaunchContext } from "../launch/prep.ts";
-import { isMuxAvailable } from "../mux.ts";
 import { findRunningSubagent } from "../runtime/running-registry.ts";
 import {
 	claimSpawnWidthSlot,
@@ -35,7 +35,7 @@ import {
 	type ResolvedSubagentRoute,
 	resolveSubagentRouting,
 } from "./model-routing.ts";
-import { getSubagentToolsWarning } from "./policy.ts";
+import { applySynchronousLaunchPolicy, getBackgroundAutoExitWarning, getSubagentToolsWarning } from "./policy.ts";
 import { registerSetTabTitleTool } from "./set-tab-title.ts";
 import { SubagentParams } from "./subagent-schema.ts";
 import { SET_TAB_TITLE_TOOL_NAME, SUBAGENT_KILL_TOOL_NAME, SUBAGENT_TOOL_NAME } from "./tool-names.ts";
@@ -164,10 +164,8 @@ async function launchSubagentByMode(
 	params: SubagentParamsInput,
 	launchCtx: SubagentLaunchContext,
 	runtime: SubagentToolRuntime,
-	ctx: ExtensionContext,
-	isBackground: boolean,
+	usesBackgroundLaunch: boolean,
 ): Promise<RunningSubagent> {
-	const usesBackgroundLaunch = isBackground || !ctx.hasUI || !isMuxAvailable();
 	const running = usesBackgroundLaunch
 		? await runtime.launchBackgroundSubagent(params, launchCtx)
 		: await runtime.launchSubagent(params, launchCtx);
@@ -180,20 +178,6 @@ async function launchSubagentByMode(
 		watch(running, runtime.getWatcherSignal(running, watcherAbort)),
 	);
 	return running;
-}
-
-function applySynchronousLaunchPolicy(
-	params: SubagentParamsInput,
-	agentDefs: AgentDefaults | null,
-	hasUI: boolean,
-): true | undefined {
-	const forceSynchronousLaunch = shouldForceSynchronousLaunch(hasUI);
-	if (forceSynchronousLaunch) {
-		params.async = false;
-		params.blocking = true;
-		markSubagentBatchBlocking();
-	}
-	return forceSynchronousLaunch && agentDefs?.autoExit !== true ? true : undefined;
 }
 
 function buildSubagentLaunchContext(
@@ -231,8 +215,14 @@ async function launchOneSubagent(
 	// delivery. Force blocking and record the batch as blocking too, so a stop
 	// requested from frontmatter cannot attach `terminate` to the completed
 	// result before the model reads the report it just waited for.
-	const headlessAutoExit = applySynchronousLaunchPolicy(effectiveParams, agentDefs, ctx.hasUI);
-	const isBackground = effectiveParams.background ?? agentDefs?.mode === "background";
+	const usesBackgroundLaunch = shouldUseBackgroundLaunch(effectiveParams, agentDefs, ctx.hasUI);
+	const forceSynchronousLaunch = shouldForceSynchronousLaunch(ctx.hasUI);
+	const headlessAutoExit = applySynchronousLaunchPolicy(
+		effectiveParams,
+		agentDefs,
+		usesBackgroundLaunch,
+		forceSynchronousLaunch,
+	);
 
 	const launchCtx = buildSubagentLaunchContext(toolCallId, ctx, pi, headlessAutoExit);
 	if (agentDefs?.llmAsVerifier === true) {
@@ -244,7 +234,7 @@ async function launchOneSubagent(
 		});
 		return running;
 	}
-	return launchSubagentByMode(effectiveParams, launchCtx, runtime, ctx, isBackground);
+	return launchSubagentByMode(effectiveParams, launchCtx, runtime, usesBackgroundLaunch);
 }
 
 export function isOneShotPromptInvocation(argv = process.argv): boolean {
@@ -399,7 +389,9 @@ export function registerSubagentCoreTools(
 						child,
 						agentDefs,
 						blocking: resolveSubagentBlocking(child, agentDefs),
-						warning: getSubagentToolsWarning(agentDefs?.tools),
+						warning:
+							getSubagentToolsWarning(agentDefs?.tools) ??
+							getBackgroundAutoExitWarning(agentDefs, shouldUseBackgroundLaunch(child, agentDefs, ctx.hasUI)),
 						route: undefined as ResolvedSubagentRoute | undefined,
 					};
 				});

@@ -1,3 +1,4 @@
+import { outstandingWork } from "./outstanding-work.ts";
 import type { CompletedSubagentResult, RunningSubagent, SubagentPingMessageDetails, SubagentResult } from "../types.ts";
 import { formatContextExitNotice, formatFinalContextUsage, formatSessionRef } from "./final-context-usage.ts";
 import { releaseSpawnWidthSlot } from "./spawn-width.ts";
@@ -76,7 +77,7 @@ export function deliverCompletedSubagentResult(
 	completed.deliveredTo = "steer";
 	const sessionRef = formatSessionRef(completed);
 	const contextRef = getCompletedContextReference(completed);
-	pi.sendMessage(
+	outstandingWork.delivery(completed.id, () => pi.sendMessage(
 		{
 			customType: "subagent_result",
 			content: getCompletedSubagentContent(completed, formatElapsed, `${sessionRef}${contextRef}`),
@@ -84,7 +85,7 @@ export function deliverCompletedSubagentResult(
 			details: getCompletedResultDetails(completed),
 		},
 		{ triggerTurn: true, deliverAs },
-	);
+	));
 	return completed;
 }
 
@@ -139,20 +140,21 @@ function deliverSubagentPing(
 	result: SubagentResult,
 	formatElapsed: (elapsed: number) => string,
 ): void {
-	if (!result.ping) return;
+	const ping = result.ping;
+	if (!ping) return;
 	const sessionRef = result.sessionFile
 		? `\n\nSession: ${result.sessionFile}\nResume: pi --session ${result.sessionFile}`
 		: "";
-	pi.sendMessage(
+	outstandingWork.delivery(running.id, () => pi.sendMessage(
 		{
 			customType: "subagent_ping",
 			content:
-				`Sub-agent "${result.ping.name}" needs help (${formatElapsed(result.elapsed)}).\n\n` +
-				`${result.ping.message}${sessionRef}`,
+				`Sub-agent "${ping.name}" needs help (${formatElapsed(result.elapsed)}).\n\n` +
+				`${ping.message}${sessionRef}`,
 			display: true,
 			details: {
 				id: running.id,
-				name: result.ping.name,
+				name: ping.name,
 				task: running.task,
 				agent: running.agent,
 				mode: running.mode,
@@ -163,11 +165,11 @@ function deliverSubagentPing(
 				elapsed: result.elapsed,
 				outputTokens: result.outputTokens,
 				sessionFile: result.sessionFile,
-				message: result.ping.message,
+				message: ping.message,
 			} as SubagentPingMessageDetails,
 		},
 		{ triggerTurn: true, deliverAs: "steer" },
-	);
+	));
 }
 
 function getCompletedSubagentContent(

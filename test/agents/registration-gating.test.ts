@@ -97,13 +97,16 @@ describe("extension registration gating", () => {
 				[...captured.handlers.keys()].sort(),
 				[
 					"agent_end",
+					"agent_settled",
 					"before_agent_start",
+					"context",
 					"input",
 					"message_end",
 					"session_shutdown",
 					"session_start",
 					"session_tree",
 					"tool_call",
+					"tool_result",
 					"turn_start",
 				],
 			);

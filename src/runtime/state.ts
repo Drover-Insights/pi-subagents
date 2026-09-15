@@ -1,10 +1,11 @@
+import { outstandingWork } from "./outstanding-work.ts";
 import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
 import { getSubagentTerminalStopReason } from "../session/session.ts";
 import type { CompletedSubagentResult, RunningSubagent, SubagentCompletionStatus, SubagentResult } from "../types.ts";
 import { releaseSpawnWidthSlot, resetSpawnWidthForTest } from "./spawn-width.ts";
 import { SubagentWidgetManager } from "./widget.ts";
 
-export const runningSubagents = new Map<string, RunningSubagent>();
+export const runningSubagents = outstandingWork.running;
 export const completedSubagentResults = new Map<string, CompletedSubagentResult>();
 
 function getSubagentCompletionStatus(
@@ -153,6 +154,7 @@ export function resetRuntimeStateForTest(resetAmbient: () => void): void {
 		releaseSpawnWidthSlot(agent);
 	}
 	runningSubagents.clear();
+	outstandingWork.reset();
 	completedSubagentResults.clear();
 	resetSpawnWidthForTest();
 	resetSubagentBatchStopRequest();

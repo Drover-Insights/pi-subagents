@@ -97,7 +97,7 @@ This repo does not commit fixed smoke agents (`.pi/` is gitignored). For each li
 
 ### Standard live-test procedure
 
-- Prefer `pi -p` for deterministic repros.
+- Prefer `pi -p` for deterministic repros. For async-parent lifecycle/sidebar repros, use interactive TUI Pi and submit the prompt **after startup**: print/RPC/JSON and CLI startup prompts force synchronous child launches and mask the yielded interval.
 - Use a temporary `--session-dir`.
 - Inspect session JSONL when behavior is subtle.
 - Check both parent and child sessions.

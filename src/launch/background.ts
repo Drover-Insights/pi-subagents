@@ -61,7 +61,7 @@ export async function buildBackgroundLaunchPlan(
 	ctx: SubagentLaunchContext,
 	options: { frozenTaskArg?: string; frozenFullTask?: string; spawningDenied?: boolean } = {},
 ): Promise<BackgroundLaunchPlan> {
-	const launch = await coordinateSubagentLaunch(params, ctx, { mode: "background" });
+	const launch = await coordinateSubagentLaunch(params, { ...ctx, autoExit: true }, { mode: "background" });
 	const { prepared, directTask } = launch;
 	const subagentDonePath = join(dirname(dirname(fileURLToPath(import.meta.url))), "tools", "subagent-done.ts");
 	let fullTask: string;

@@ -1,5 +1,6 @@
 import { mkdirSync, readdirSync, rmSync } from "node:fs";
 import { resumeSubagentSession } from "../../src/runtime/resume-service.ts";
+import { readSubagentLaunchMetadataEntries } from "../../src/session/session-files.ts";
 import {
 	assert,
 	createTestDir,
@@ -27,7 +28,7 @@ async function readNonEmptyFileEventually(path: string): Promise<string> {
 }
 
 describe("subagent_resume env filtering", () => {
-	it("applies persisted deny-env to background resumes", async () => {
+	it("applies persisted deny-env and persists model overrides on background resumes", async () => {
 		const dir = createTestDir();
 		const stdinLog = join(dir, "stdin.log");
 		const envLog = join(dir, "env.log");
@@ -67,6 +68,9 @@ printenv | sort > '${envLog}'
 				mode: "background",
 				sessionMode: "lineage-only",
 				autoExit: true,
+				model: "provider/original",
+				modelRef: "provider/original:low",
+				allowModelOverride: true,
 				parentClosePolicy: "terminate",
 				async: true,
 				denyTools: [],
@@ -80,7 +84,7 @@ printenv | sort > '${envLog}'
 
 
 			await resumeSubagentSession(
-				{ sessionFile, task: "Background deny-env probe." },
+				{ sessionFile, task: "Background deny-env probe.", model: "provider/override:high" },
 				{
 					isMuxAvailable: () => true,
 					getShellReadyDelayMs: () => 0,
@@ -102,6 +106,9 @@ printenv | sort > '${envLog}'
 					startWidgetRefresh: () => {},
 					getContextWindow: () => undefined,
 					runningSubagents: new Map<string, any>(),
+					modelRegistry: {
+						getAvailable: () => [{ provider: "provider", id: "override", thinkingLevelMap: { high: "high" } }],
+					},
 				},
 			);
 
@@ -111,6 +118,10 @@ printenv | sort > '${envLog}'
 			assert.doesNotMatch(env, /RESUME_TEST_GLOBAL_DENY=/, "global deny must filter the child env");
 			assert.match(env, /RESUME_TEST_KEEP=kept/, "non-denied env must still flow");
 			assert.match(env, /PI_SUBAGENT_NAME=resume-child/, "controlled overrides must still flow");
+			const entries = readSubagentLaunchMetadataEntries(sessionFile);
+			assert.equal(entries.length, 2, "a resume model override must append launch metadata");
+			assert.equal(entries.at(-1)?.modelRef, "provider/override:high");
+			assert.equal(entries.at(-1)?.modelSource, "resume-override");
 		} finally {
 			if (originalCommand == null) delete process.env.PI_SUBAGENT_PI_COMMAND;
 			else process.env.PI_SUBAGENT_PI_COMMAND = originalCommand;
@@ -120,6 +131,71 @@ printenv | sort > '${envLog}'
 			else process.env.RESUME_TEST_AGENT_DENY = originalAgentDeny;
 			if (originalKeep === undefined) delete process.env.RESUME_TEST_KEEP;
 			else process.env.RESUME_TEST_KEEP = originalKeep;
+		}
+	});
+
+	it("forces auto-exit when persisted background metadata says false", async () => {
+		const dir = createTestDir();
+		const capturedAutoExit = join(dir, "captured-auto-exit.txt");
+		const bin = writeExecutable(
+			dir,
+			"capture-auto-exit",
+			"#!/usr/bin/env bash\nprintf '%s' \"$PI_SUBAGENT_AUTO_EXIT\" > " + JSON.stringify(capturedAutoExit) + "\n",
+		);
+		const originalCommand = process.env.PI_SUBAGENT_PI_COMMAND;
+		process.env.PI_SUBAGENT_PI_COMMAND = bin;
+		try {
+			const sessionFile = join(dir, "legacy-background.jsonl");
+			writeFileSync(
+				sessionFile,
+				JSON.stringify({
+					type: "session",
+					version: 3,
+					id: "legacy-background",
+					timestamp: new Date().toISOString(),
+					cwd: dir,
+				}) + "\n",
+			);
+			await writeSubagentLaunchMetadataEntryForTest(sessionFile, {
+				version: 1,
+				timestamp: new Date().toISOString(),
+				name: "legacy-background",
+				mode: "background",
+				sessionMode: "lineage-only",
+				autoExit: false,
+				parentClosePolicy: "terminate",
+				async: true,
+				denyTools: [],
+				noContextFiles: false,
+				noSession: false,
+				agentConfigDir: dir,
+				cwd: dir,
+				boundarySystemPrompt: false,
+			});
+
+			const quietResult = async () => ({ name: "", task: "", summary: "", exitCode: 0, elapsed: 0 });
+			const running = await resumeSubagentSession(
+				{ sessionFile },
+				{
+					isMuxAvailable: () => true,
+					getShellReadyDelayMs: () => 0,
+					watchBackgroundSubagent: quietResult,
+					watchSubagent: quietResult,
+					getWatcherSignal: (_running: any, controller: AbortController) => controller.signal,
+					startWidgetRefresh: () => {},
+					getContextWindow: () => undefined,
+					runningSubagents: new Map<string, any>(),
+				},
+			);
+
+			assert.equal(running.mode, "background");
+			assert.equal(running.async, true);
+			assert.equal(running.autoExit, true);
+			assert.equal(running.launchMetadata?.autoExit, true);
+			assert.equal(await readNonEmptyFileEventually(capturedAutoExit), "1");
+		} finally {
+			if (originalCommand == null) delete process.env.PI_SUBAGENT_PI_COMMAND;
+			else process.env.PI_SUBAGENT_PI_COMMAND = originalCommand;
 		}
 	});
 
@@ -171,7 +247,6 @@ esac
 				agent: "scout",
 				mode: "interactive",
 				sessionMode: "fork",
-				autoExit: true,
 				parentClosePolicy: "terminate",
 				async: true,
 				denyTools: [],
@@ -183,7 +258,7 @@ esac
 				denyEnv: "RESUME_TEST_AGENT_DENY, RESUME_TEST_MISSING_*",
 			});
 
-			await resumeSubagentSession(
+			const running = await resumeSubagentSession(
 				{ sessionFile, task: "Interactive deny-env probe." },
 				{
 					isMuxAvailable: () => true,
@@ -197,6 +272,12 @@ esac
 				},
 			);
 
+			assert.equal(running.autoExit, true, "interactive resumes default auto-exit to true when metadata omits it");
+			assert.equal(
+				running.launchMetadata?.autoExit,
+				undefined,
+				"interactive resumes must not persist a synthesized auto-exit override",
+			);
 			const log = readFileSync(logFile, "utf8");
 			const capsuleMatch = log.match(/run-child\.mjs' '([^']+)'/);
 			assert.ok(capsuleMatch, "expected the resume command to invoke the capsule launcher");

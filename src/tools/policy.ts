@@ -1,5 +1,7 @@
 import type { AgentDefaults } from "../agents/definitions.ts";
 import { isSetTabTitleToolEnabled } from "../agents/titles.ts";
+import { markSubagentBatchBlocking } from "../runtime/state.ts";
+import type { SubagentParamsInput } from "../types.ts";
 import {
 	CALLER_PING_TOOL_NAME,
 	SET_TAB_TITLE_TOOL_NAME,
@@ -134,6 +136,32 @@ export function getSubagentToolsWarning(tools?: string): SubagentToolsWarning | 
 		}
 	}
 	return null;
+}
+
+export function getBackgroundAutoExitWarning(
+	agentDefs: AgentDefaults | null,
+	usesBackgroundLaunch: boolean,
+): SubagentToolsWarning | null {
+	if (!usesBackgroundLaunch || agentDefs?.autoExit !== false) return null;
+	return {
+		name: "auto-exit",
+		suggestion: "true",
+		message: "Warning: background launches always use auto-exit: true; auto-exit: false is ignored.",
+	};
+}
+
+export function applySynchronousLaunchPolicy(
+	params: SubagentParamsInput,
+	agentDefs: AgentDefaults | null,
+	usesBackgroundLaunch: boolean,
+	forceSynchronousLaunch: boolean,
+): true | undefined {
+	if (forceSynchronousLaunch) {
+		params.async = false;
+		params.blocking = true;
+		markSubagentBatchBlocking();
+	}
+	return (usesBackgroundLaunch || forceSynchronousLaunch) && agentDefs?.autoExit !== true ? true : undefined;
 }
 
 function normalizeToolMode(tools?: string): "default" | "all" | "none" | "list" {

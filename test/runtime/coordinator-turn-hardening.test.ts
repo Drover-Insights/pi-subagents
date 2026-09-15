@@ -1,7 +1,12 @@
 import { rmSync } from "node:fs";
+import { shouldUseBackgroundLaunch } from "../../src/launch/policy.ts";
 import type { AgentDefaults } from "../../src/agents/definitions.ts";
 import { getLiveSlotCount } from "../../src/runtime/spawn-width.ts";
 import { markInitialPromptLaunchComplete, registerSubagentCoreTools, type SubagentToolRuntime } from "../../src/tools/subagent-tools.ts";
+import {
+	applySynchronousLaunchPolicy,
+	getBackgroundAutoExitWarning,
+} from "../../src/tools/policy.ts";
 import type { RunningSubagent, SubagentParamsInput, SubagentResult } from "../../src/types.ts";
 import {
 	assert,
@@ -132,6 +137,49 @@ function registerCoreTool(runtime: SubagentToolRuntime) {
 describe("coordinator-turn launch hardening", () => {
 	afterEach(() => resetSubagentStateForTest());
 
+	it("separates explicit background, verifier, UI, and mux launch causes", async () => {
+		await withFakeTmux(true, async () => {
+			assert.equal(shouldUseBackgroundLaunch({ background: false }, { mode: "background" }, true), false);
+			assert.equal(shouldUseBackgroundLaunch({ background: true }, { mode: "interactive" }, true), true);
+			assert.equal(
+				shouldUseBackgroundLaunch({ background: false }, { mode: "interactive", llmAsVerifier: true }, true),
+				true,
+			);
+			assert.equal(shouldUseBackgroundLaunch({}, { mode: "interactive" }, true), false);
+			assert.equal(shouldUseBackgroundLaunch({}, { mode: "interactive" }, false), true);
+		});
+		await withFakeTmux(false, async () => {
+			assert.equal(shouldUseBackgroundLaunch({}, { mode: "interactive" }, true), true);
+		});
+	});
+
+	it("warns only when a background definition disables auto-exit", () => {
+		assert.equal(getBackgroundAutoExitWarning(null, true), null);
+		assert.equal(getBackgroundAutoExitWarning({ autoExit: true }, true), null);
+		assert.equal(getBackgroundAutoExitWarning({ autoExit: false }, false), null);
+		const warning = getBackgroundAutoExitWarning({ autoExit: false }, true);
+		assert.equal(warning?.name, "auto-exit");
+		assert.equal(warning?.suggestion, "true");
+		assert.match(warning?.message ?? "", /auto-exit: false is ignored/);
+	});
+
+	it("keeps asynchronous background policy unchanged and forces headless sync when requested", () => {
+		const params: SubagentParamsInput = {
+			name: "background-child",
+			task: "Return the report",
+			title: "Background child",
+			agent: "worker",
+			async: true,
+			blocking: false,
+		};
+		assert.equal(applySynchronousLaunchPolicy(params, { autoExit: false }, true, false), true);
+		assert.deepEqual({ async: params.async, blocking: params.blocking }, { async: true, blocking: false });
+		assert.equal(applySynchronousLaunchPolicy(params, { autoExit: true }, true, false), undefined);
+		assert.equal(applySynchronousLaunchPolicy(params, { autoExit: false }, false, false), undefined);
+		assert.equal(applySynchronousLaunchPolicy(params, { autoExit: false }, false, true), true);
+		assert.deepEqual({ async: params.async, blocking: params.blocking }, { async: false, blocking: true });
+	});
+
 	it("selects interactive and fallback background launch paths and preserves launch context", async () => {
 		// The startup prompt has ended, so a UI session with an interactive agent
 		// must retain the pane path instead of being forced into a background run.
@@ -218,6 +266,33 @@ describe("coordinator-turn launch hardening", () => {
 			forcedAutoExitRecords[0]?.context.autoExit,
 			true,
 			"a forced synchronous launch must give a non-auto-exit agent a bounded auto-exit override",
+		);
+	});
+
+	it("warns when a background launch ignores explicit auto-exit false", async () => {
+		const records: LaunchRecord[] = [];
+		const runtime = makeLaunchRuntime({ spawning: false, mode: "background", autoExit: false, async: true }, records);
+		const tool = registerCoreTool(runtime);
+
+		const result = (await tool.execute(
+			"background-call",
+			{ agent: "background-worker", name: "background-worker", title: "Background worker", task: "Return the report" },
+			undefined,
+			undefined,
+			{
+				hasUI: true,
+				cwd: process.cwd(),
+				model: { provider: "provider", id: "model" },
+				sessionManager: { getSessionFile: () => "/tmp/parent.jsonl", getSessionId: () => "parent" },
+			},
+		)) as { content: Array<{ type: string; text: string }> };
+
+		assert.equal(records[0]?.kind, "background");
+		assert.equal(records[0]?.params.async, true);
+		assert.equal(records[0]?.context.autoExit, true);
+		assert.match(
+			result.content.find((block) => block.type === "text")?.text ?? "",
+			/Warning: background launches always use auto-exit: true/,
 		);
 	});
 
