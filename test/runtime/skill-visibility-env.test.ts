@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 
 import { resumeSubagentSession } from "../../src/runtime/resume-service.ts";
 import { restartSubagentForTimeoutWrapUp } from "../../src/runtime/timeout-wrap-up.ts";
@@ -30,6 +30,15 @@ async function readNonEmptyFileEventually(path: string): Promise<string> {
 	throw new Error(`Timed out waiting for ${path}; last content: ${lastText}`);
 }
 
+function writeSkill(dir: string, name: string): void {
+	const skillDir = join(dir, "skills", name);
+	mkdirSync(skillDir, { recursive: true });
+	writeFileSync(
+		join(skillDir, "SKILL.md"),
+		`---\nname: ${name}\ndescription: ${name} test fixture.\n---\n\n# ${name}\n`,
+	);
+}
+
 function writeCapturePi(dir: string, envLog: string): string {
 	return writeExecutable(
 		dir,
@@ -39,6 +48,8 @@ function writeCapturePi(dir: string, envLog: string): string {
 }
 
 async function resumeAndCapture(dir: string, skills: string | undefined): Promise<string> {
+	writeSkill(dir, "context7");
+	writeSkill(dir, "tdd");
 	const envLog = join(dir, `env-${Math.random().toString(36).slice(2)}.log`);
 	const bin = writeCapturePi(dir, envLog);
 	const originalCommand = process.env.PI_SUBAGENT_PI_COMMAND;
@@ -122,6 +133,8 @@ describe("skill visibility env on resume and timeout wrap-up", () => {
 
 	it("restarts timeout wrap-up with the original annotation spec, and clears it without one", async () => {
 		const dir = createTestDir();
+		writeSkill(dir, "context7");
+		writeSkill(dir, "tdd");
 		for (const skills of ["context7=auto, tdd", "tdd"]) {
 			const envLog = join(dir, `wrapup-${Math.random().toString(36).slice(2)}.log`);
 			process.env.PI_SUBAGENT_PI_COMMAND = writeCapturePi(dir, envLog);
