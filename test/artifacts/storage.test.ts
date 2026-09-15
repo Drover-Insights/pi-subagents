@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import { dirname } from "node:path";
 import {
 	after,
 	assert,
@@ -51,8 +54,21 @@ describe("artifact storage", () => {
 		const nested = join(pkgRoot, "src", "feature");
 		mkdirSync(nested, { recursive: true });
 		writeFileSync(join(pkgRoot, "package.json"), "{}");
-
-		assert.equal(resolveArtifactProjectRoot(nested), pkgRoot);
+		const externalGitMarkers = new Set<string>();
+		for (let ancestor = dirname(pkgRoot); ; ancestor = dirname(ancestor)) {
+			externalGitMarkers.add(join(ancestor, ".git"));
+			if (dirname(ancestor) === ancestor) break;
+		}
+		const originalExistsSync = fs.existsSync;
+		fs.existsSync = (path) =>
+			!externalGitMarkers.has(String(path)) && originalExistsSync(path);
+		syncBuiltinESMExports();
+		try {
+			assert.equal(resolveArtifactProjectRoot(nested), pkgRoot);
+		} finally {
+			fs.existsSync = originalExistsSync;
+			syncBuiltinESMExports();
+		}
 	});
 
 	it("prefers a git root over package.json roots", () => {

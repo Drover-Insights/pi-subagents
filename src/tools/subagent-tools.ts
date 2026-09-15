@@ -3,7 +3,6 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import type { AgentDefaults } from "../agents/definitions.ts";
 import { stripInternalLaunchOverrides } from "../launch/launch-overrides.ts";
-import { resolveVerifierCandidateCount } from "../vf/criteria.ts";
 import {
 	enforceAgentFrontmatter,
 	getSubagentAgentRequirementError,
@@ -11,14 +10,7 @@ import {
 	shouldUseBackgroundLaunch,
 } from "../launch/policy.ts";
 import type { SubagentLaunchContext } from "../launch/prep.ts";
-import { parseSpawnEnv, resolveSpawnPolicy } from "../spawn/policy.ts";
 import { findRunningSubagent } from "../runtime/running-registry.ts";
-import {
-	asSubagentToolResult,
-	getCoordinatorOnlyTurnPrompt,
-	getSubagentBatchStopMetadata,
-	markSubagentBatchBlocking,
-} from "../runtime/state.ts";
 import {
 	claimSpawnWidthSlot,
 	getLiveSlotCount,
@@ -27,70 +19,31 @@ import {
 	releaseSpawnWidthSlotOnCompletion,
 	tryAcquireSlots,
 } from "../runtime/spawn-width.ts";
-import { launchVerifiedFanOut } from "../vf/run/launch.ts";
+import {
+	asSubagentToolResult,
+	getCoordinatorOnlyTurnPrompt,
+	getSubagentBatchStopMetadata,
+	markSubagentBatchBlocking,
+} from "../runtime/state.ts";
+import { parseSpawnEnv, resolveSpawnPolicy } from "../spawn/policy.ts";
 import type { RunningSubagent, SubagentParamsInput, SubagentResult } from "../types.ts";
+import { resolveVerifierCandidateCount } from "../vf/criteria.ts";
+import { launchVerifiedFanOut } from "../vf/run/launch.ts";
 
 import { formatSubagentBatchLines, formatTaskPreview, renderSubagentCompletionText } from "./message-renderers.ts";
+import {
+	type ResolvedSubagentRoute,
+	resolveSubagentRouting,
+} from "./model-routing.ts";
 import { applySynchronousLaunchPolicy, getBackgroundAutoExitWarning, getSubagentToolsWarning } from "./policy.ts";
 import { registerSetTabTitleTool } from "./set-tab-title.ts";
+import { SubagentParams } from "./subagent-schema.ts";
 import { SET_TAB_TITLE_TOOL_NAME, SUBAGENT_KILL_TOOL_NAME, SUBAGENT_TOOL_NAME } from "./tool-names.ts";
+
+export { SubagentChildParams, SubagentParams } from "./subagent-schema.ts";
 
 let initialPromptLaunchActive = isInitialPromptInvocation();
 
-const SUBAGENT_NAME_DESCRIPTION =
-	"Required machine handle for this launch. Use lower-kebab <scope>-<role>, 2-4 words, max 32 chars, matching ^[a-z][a-z0-9]*(?:-[a-z0-9]+){1,3}$; examples: auth-scout, diff-reviewer, session-tester. Do not use Title Case, spaces, underscores, generic names, or prose.";
-
-const SUBAGENT_TITLE_DESCRIPTION =
-	"Required human title for this child session/widget. Use sentence case, 3-8 words, outcome/objective focused, and not a prompt or instruction; examples: Auth implementation map, Local diff bug review.";
-
-const SUBAGENT_MODEL_DESCRIPTION =
-	"Model routing/cost control only. Omit unless the user named a concrete model for this launch. " +
-	"Do not infer a model from quality, depth, urgency, safety, or cost language. " +
-	"Never invent or upgrade models. Format: provider/model; put provider/model:thinking suffix in `thinking`.";
-
-const SUBAGENT_THINKING_DESCRIPTION =
-	"Child runtime thinking level only. Omit unless the user named a concrete thinking level for this launch. " +
-	"Do not infer thinking from quality, depth, urgency, safety, or cost language. " +
-	"Use a thinking level supported by the selected model and the installed Pi version.";
-
-export const SubagentChildParams = Type.Object({
-	name: Type.String({ description: SUBAGENT_NAME_DESCRIPTION }),
-	task: Type.String({
-		description:
-			"Task/prompt for the sub-agent. For non-trivial work, write readable Markdown: short paragraphs, bullets, or headings as appropriate. Use a one-line task only for trivial work.",
-	}),
-	title: Type.String({ description: SUBAGENT_TITLE_DESCRIPTION }),
-	agent: Type.String({
-		description:
-			"Required agent definition name. Reads .pi/agents/<name>.md or ~/.pi/agent/agents/<name>.md and refuses ad-hoc unnamed subagents.",
-	}),
-	model: Type.Optional(Type.String({ description: SUBAGENT_MODEL_DESCRIPTION })),
-	thinking: Type.Optional(Type.String({ description: SUBAGENT_THINKING_DESCRIPTION })),
-});
-
-export const SubagentParams = Type.Object({
-	name: Type.Optional(Type.String({ description: SUBAGENT_NAME_DESCRIPTION })),
-	task: Type.Optional(
-		Type.String({
-			description:
-				"Task/prompt for a single sub-agent. For non-trivial work, write readable Markdown: short paragraphs, bullets, or headings as appropriate. Use a one-line task only for trivial work.",
-		}),
-	),
-	title: Type.Optional(Type.String({ description: SUBAGENT_TITLE_DESCRIPTION })),
-	agent: Type.Optional(
-		Type.String({
-			description: "Required agent definition name for a single subagent launch.",
-		}),
-	),
-	model: Type.Optional(Type.String({ description: SUBAGENT_MODEL_DESCRIPTION })),
-	thinking: Type.Optional(Type.String({ description: SUBAGENT_THINKING_DESCRIPTION })),
-	children: Type.Optional(
-		Type.Array(SubagentChildParams, {
-			description:
-				"Spawn multiple children in one deterministic launch. Use this instead of multiple separate subagent tool calls when a user asks for more than one agent.",
-		}),
-	),
-});
 const SubagentKillParams = Type.Object({
 	id: Type.String({
 		description: "Running subagent id or display name to stop",
@@ -211,7 +164,6 @@ async function launchSubagentByMode(
 	params: SubagentParamsInput,
 	launchCtx: SubagentLaunchContext,
 	runtime: SubagentToolRuntime,
-	ctx: ExtensionContext,
 	usesBackgroundLaunch: boolean,
 ): Promise<RunningSubagent> {
 	const running = usesBackgroundLaunch
@@ -253,8 +205,12 @@ async function launchOneSubagent(
 	ctx: ExtensionContext,
 	runtime: SubagentToolRuntime,
 	pi: ExtensionAPI,
+	route?: ResolvedSubagentRoute,
 ): Promise<RunningSubagent> {
 	const effectiveParams = enforceAgentFrontmatter(params, agentDefs);
+	if (route) {
+		effectiveParams.policyRoute = route;
+	}
 	// In print/prompt-style runs there is no durable parent turn for async steer
 	// delivery. Force blocking and record the batch as blocking too, so a stop
 	// requested from frontmatter cannot attach `terminate` to the completed
@@ -278,7 +234,7 @@ async function launchOneSubagent(
 		});
 		return running;
 	}
-	return launchSubagentByMode(effectiveParams, launchCtx, runtime, ctx, usesBackgroundLaunch);
+	return launchSubagentByMode(effectiveParams, launchCtx, runtime, usesBackgroundLaunch);
 }
 
 export function isOneShotPromptInvocation(argv = process.argv): boolean {
@@ -411,6 +367,7 @@ export function registerSubagentCoreTools(
 				"- If launching multiple helpers for one user request, make one subagent call with children:[...] so all helpers start before any waiting happens.\n" +
 				"- If the user names multiple agents, include each named agent exactly once. Do not substitute one agent for another.\n" +
 				"- Leave model/thinking unset unless the user named concrete values. Do not infer them from quality, depth, urgency, safety, or cost language.\n" +
+				"- For routing-enabled pilot agents, leave model and thinking unset even when the user names concrete values; the routing policy selects both.\n" +
 				"\n" +
 				"Writing tasks:\n" +
 				"- Translate the user's request into each helper's task; do not change the work just because of the agent name.\n" +
@@ -435,8 +392,20 @@ export function registerSubagentCoreTools(
 						warning:
 							getSubagentToolsWarning(agentDefs?.tools) ??
 							getBackgroundAutoExitWarning(agentDefs, shouldUseBackgroundLaunch(child, agentDefs, ctx.hasUI)),
+						route: undefined as ResolvedSubagentRoute | undefined,
 					};
 				});
+				for (const entry of prepared) {
+					const policyResult = resolveSubagentRouting(toolCallId, entry.child, entry.agentDefs);
+					if (!policyResult) continue;
+					if ("status" in policyResult) {
+						return asSubagentToolResult({
+							content: [{ type: "text", text: `Routing policy rejected the request: ${policyResult.reason}.` }],
+							details: policyResult,
+						});
+					}
+					entry.route = { model: policyResult.logicalRoute, thinking: policyResult.thinking };
+				}
 				// Slot cost per child: 1 normally, N candidates for a verified
 				// fan-out (SPEC: N candidates consume N spawn slots, reserved
 				// atomically before any worktree creation or verifier spend).
@@ -457,10 +426,22 @@ export function registerSubagentCoreTools(
 
 					for (let index = 0; index < prepared.length; index++) {
 						const entry = prepared[index];
-						const running = await launchOneSubagent(toolCallId, entry.child, entry.agentDefs, ctx, runtime, pi);
+						const running = await launchOneSubagent(
+							toolCallId,
+							entry.child,
+							entry.agentDefs,
+							ctx,
+							runtime,
+							pi,
+							entry.route,
+						);
 						unlaunchedSlots -= slotCosts[index];
 						launched.push(running);
-						runtime.wireSubagentSteerBack(pi, running, running.completionPromise!);
+						runtime.wireSubagentSteerBack(
+							pi,
+							running,
+							running.completionPromise as Promise<SubagentResult>,
+						);
 					}
 				} catch (error) {
 					releaseSlots(unlaunchedSlots);

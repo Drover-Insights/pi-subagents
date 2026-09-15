@@ -519,6 +519,10 @@ describe("agent definitions and catalog", () => {
 		assert.match(tool.promptSnippet, /make one subagent call with children/);
 		assert.match(tool.promptSnippet, /include each named agent exactly once/);
 		assert.match(tool.promptSnippet, /Do not substitute one agent for another/);
+		assert.match(
+			tool.promptSnippet,
+			/For routing-enabled pilot agents, leave model and thinking unset even when the user names concrete values; the routing policy selects both/,
+		);
 		assert.match(tool.promptSnippet, /Translate the user.s request into each helper.s task/);
 		assert.match(tool.promptSnippet, /do not change the work just because of the agent name/);
 		assert.match(
