@@ -4,6 +4,7 @@ import { Type } from "typebox";
 import type { AgentDefaults } from "../agents/definitions.ts";
 import { stripInternalLaunchOverrides } from "../launch/launch-overrides.ts";
 import { resolveVerifierCandidateCount } from "../vf/criteria.ts";
+import { resolveRoutingPolicy } from "../routing/policy.ts";
 import {
 	enforceAgentFrontmatter,
 	getSubagentAgentRequirementError,
@@ -66,6 +67,13 @@ export const SubagentChildParams = Type.Object({
 	}),
 	model: Type.Optional(Type.String({ description: SUBAGENT_MODEL_DESCRIPTION })),
 	thinking: Type.Optional(Type.String({ description: SUBAGENT_THINKING_DESCRIPTION })),
+	capabilityClass: Type.Optional(
+		Type.String({ description: "Required capability class for routing-enabled pilot agents." }),
+	),
+	escalationReason: Type.Optional(
+		Type.String({ description: "Required policy escalation reason when the capability class requires one." }),
+	),
+	risk: Type.Optional(Type.String({ description: "Required risk level for routing-enabled pilot agents." })),
 });
 
 export const SubagentParams = Type.Object({
@@ -84,6 +92,13 @@ export const SubagentParams = Type.Object({
 	),
 	model: Type.Optional(Type.String({ description: SUBAGENT_MODEL_DESCRIPTION })),
 	thinking: Type.Optional(Type.String({ description: SUBAGENT_THINKING_DESCRIPTION })),
+	capabilityClass: Type.Optional(
+		Type.String({ description: "Required capability class for routing-enabled pilot agents." }),
+	),
+	escalationReason: Type.Optional(
+		Type.String({ description: "Required policy escalation reason when the capability class requires one." }),
+	),
+	risk: Type.Optional(Type.String({ description: "Required risk level for routing-enabled pilot agents." })),
 	children: Type.Optional(
 		Type.Array(SubagentChildParams, {
 			description:
@@ -124,6 +139,17 @@ function getRequestedChildren(params: SubagentToolParams): SubagentParamsInput[]
 		return params.children.map((child) => stripInternalLaunchOverrides(child));
 	}
 	return [stripInternalLaunchOverrides(params as SubagentParamsInput)];
+}
+
+function isRoutingEnabledAgent(agent: string): boolean {
+	return (
+		agent === "pilot-scout" ||
+		agent === "pilot-worker" ||
+		agent === "pilot-reviewer" ||
+		agent === "pilot-frontier-critic" ||
+		agent === "pilot-frontier-engineer" ||
+		agent === "pilot-controller"
+	);
 }
 
 function getSpawnWidthError(text: string): ToolResult {
@@ -444,6 +470,25 @@ export function registerSubagentCoreTools(
 						warning: getSubagentToolsWarning(agentDefs?.tools),
 					};
 				});
+				for (const { child, agentDefs } of prepared) {
+					if (!isRoutingEnabledAgent(child.agent)) continue;
+					const policyResult = resolveRoutingPolicy({
+						dispatchId: toolCallId,
+						agent: child.agent,
+						mode: child.background ?? agentDefs?.mode === "background" ? "background" : "interactive",
+						capabilityClass: child.capabilityClass,
+						escalationReason: child.escalationReason,
+						risk: child.risk,
+						model: child.model,
+						thinking: child.thinking,
+					});
+					if ("status" in policyResult) {
+						return asSubagentToolResult({
+							content: [{ type: "text", text: `Routing policy rejected the request: ${policyResult.reason}.` }],
+							details: policyResult,
+						});
+					}
+				}
 				// Slot cost per child: 1 normally, N candidates for a verified
 				// fan-out (SPEC: N candidates consume N spawn slots, reserved
 				// atomically before any worktree creation or verifier spend).

@@ -29,6 +29,9 @@ export interface SubagentParamsInput {
 	systemPrompt?: string;
 	model?: string;
 	thinking?: string;
+	capabilityClass?: string;
+	escalationReason?: string;
+	risk?: string;
 	skills?: string;
 	injectSkills?: string;
 	tools?: string;
