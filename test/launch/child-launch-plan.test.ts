@@ -413,6 +413,98 @@ describe("child launch plan", () => {
 		);
 	});
 
+	it("does not apply caller allowed-models to a policy-selected route", async () => {
+		const cwd = createTestDir();
+		const parentSessionDir = join(cwd, "parent-sessions");
+
+		const plan = await buildChildLaunchPlan({
+			params: {
+				name: "route-scout",
+				task: "Map the route",
+				title: "Route map",
+				agent: "pilot-scout",
+				policyRoute: {
+					model: "openai-codex/gpt-5.6-luna",
+					thinking: "low",
+				},
+			},
+			agentDefs: {
+				model: "provider/frontmatter-default",
+				allowedModels: "provider/caller-choice",
+			},
+			parentCwd: cwd,
+			parentSessionDir,
+			modelRegistry: {
+				getAvailable: () => [
+					{ provider: "openai-codex", id: "gpt-5.6-luna" },
+				],
+			},
+		});
+
+		assert.equal(plan.effectiveModelRef, "openai-codex/gpt-5.6-luna:low");
+	});
+
+	it("fails closed when a policy route cannot be validated", async () => {
+		const cwd = createTestDir();
+		const params = {
+			name: "route-scout",
+			task: "Map the route",
+			title: "Route map",
+			agent: "pilot-scout",
+			policyRoute: {
+				model: "openai-codex/gpt-5.6-luna",
+				thinking: "low",
+			},
+		};
+		const options = {
+			params,
+			agentDefs: { allowedModels: "provider/caller-choice" },
+			parentCwd: cwd,
+			parentSessionDir: join(cwd, "parent-sessions"),
+		};
+
+		await assert.rejects(
+			() => buildChildLaunchPlan(options),
+			/policy-selected model.*cannot be validated without available models/,
+		);
+		await assert.rejects(
+			() =>
+				buildChildLaunchPlan({
+					...options,
+					modelRegistry: { getAvailable: () => [] },
+				}),
+			/policy-selected model.*cannot be validated without available models/,
+		);
+		await assert.rejects(
+			() =>
+				buildChildLaunchPlan({
+					...options,
+					modelRegistry: {
+						getAvailable: () => [
+							{ provider: "provider", id: "different-model" },
+						],
+					},
+				}),
+			/Unknown model override 'openai-codex\/gpt-5\.6-luna'/,
+		);
+		await assert.rejects(
+			() =>
+				buildChildLaunchPlan({
+					...options,
+					params: {
+						...params,
+						policyRoute: { ...params.policyRoute, thinking: "unsupported" },
+					},
+					modelRegistry: {
+						getAvailable: () => [
+							{ provider: "openai-codex", id: "gpt-5.6-luna" },
+						],
+					},
+				}),
+			/does not support thinking level 'unsupported'/,
+		);
+	});
+
 	it("resolves bare agent default models before allowed model checks", async () => {
 		const cwd = createTestDir();
 		const parentSessionDir = join(cwd, "parent-sessions");

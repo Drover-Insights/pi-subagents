@@ -160,6 +160,16 @@ export function resolveAvailableModelRef(
 export async function buildChildLaunchPlan(options: ChildLaunchPlanOptions): Promise<ChildLaunchPlan> {
 	const { params, agentDefs, parentCwd, parentSessionDir } = options;
 	const hasAllowedModels = !!agentDefs?.allowedModels?.trim();
+	const policyRoute = params.policyRoute;
+	const policyModels = policyRoute ? options.modelRegistry?.getAvailable() : undefined;
+	if (policyRoute && !policyModels?.length) {
+		throw new Error(
+			`The policy-selected model '${policyRoute.model}' cannot be validated without available models.`,
+		);
+	}
+	const modelRegistry = policyModels
+		? { getAvailable: () => policyModels }
+		: options.modelRegistry;
 	const resolveRef = (
 		model: string | undefined,
 		fallbackThinking: string | undefined,
@@ -177,21 +187,34 @@ export async function buildChildLaunchPlan(options: ChildLaunchPlanOptions): Pro
 		// model resolution.
 		const shouldResolve = !!split.model && (opts.resolveAlways || (hasAllowedModels && !split.model.includes("/")));
 		const available = shouldResolve
-			? resolveAvailableModelRef(split.model, split.thinking, explicit, options.modelRegistry, options.parentModelRef)
+			? resolveAvailableModelRef(
+					split.model,
+					split.thinking,
+					explicit,
+					modelRegistry,
+					options.parentModelRef,
+				)
 			: split;
 		return normalizeModelRef(available.model, available.thinking);
 	};
 
-	const requestedModel = params.model ?? agentDefs?.model ?? options.parentModelRef;
+	const requestedModel =
+		policyRoute?.model ??
+		params.model ??
+		agentDefs?.model ??
+		options.parentModelRef;
 	const { effectiveModel, effectiveThinking, effectiveModelRef } = resolveRef(
 		requestedModel,
-		params.thinking ?? agentDefs?.thinking ?? options.parentThinking,
+		policyRoute?.thinking ??
+			params.thinking ??
+			agentDefs?.thinking ??
+			options.parentThinking,
 		{
-			resolveAlways: params.model != null,
-			explicitThinking: params.thinking != null,
+			resolveAlways: policyRoute != null || params.model != null,
+			explicitThinking: policyRoute != null || params.thinking != null,
 		},
 	);
-	if (hasAllowedModels) {
+	if (hasAllowedModels && !policyRoute) {
 		const defaultModelRef = resolveRef(
 			agentDefs?.model ?? options.parentModelRef,
 			agentDefs?.thinking ?? options.parentThinking,

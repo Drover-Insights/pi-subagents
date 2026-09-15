@@ -17,13 +17,25 @@ export interface LaunchRuntimeOverrides {
 }
 
 /**
- * Remove the internal override fields from model-callable tool input. The
+ * Remove internal launch fields from model-callable tool input. The
  * subagent tool schema does not advertise them, but a caller that smuggles
  * extra JSON properties through must not reach the privileged launch path.
  */
-export function stripInternalLaunchOverrides<T extends Partial<SubagentParamsInput>>(params: T): T {
-	if (params.forcedCwd === undefined && params.launchEnv === undefined) return params;
-	const { forcedCwd: _forcedCwd, launchEnv: _launchEnv, ...rest } = params;
+export function stripInternalLaunchOverrides<
+	T extends Partial<SubagentParamsInput>,
+>(params: T): T {
+	if (
+		params.forcedCwd === undefined &&
+		params.launchEnv === undefined &&
+		params.policyRoute === undefined
+	)
+		return params;
+	const {
+		forcedCwd: _forcedCwd,
+		launchEnv: _launchEnv,
+		policyRoute: _policyRoute,
+		...rest
+	} = params;
 	return rest as T;
 }
 

@@ -5,9 +5,9 @@ import { restartSubagentForTimeoutWrapUp } from "../../src/runtime/timeout-wrap-
 import type { PersistedSubagentLaunchMetadata } from "../../src/session/session-files.ts";
 import type { RunningSubagent } from "../../src/types.ts";
 import {
+	afterEach,
 	assert,
 	createTestDir,
-	afterEach,
 	describe,
 	existsSync,
 	it,

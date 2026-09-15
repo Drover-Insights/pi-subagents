@@ -29,6 +29,14 @@ export interface SubagentParamsInput {
 	systemPrompt?: string;
 	model?: string;
 	thinking?: string;
+	/**
+	 * Internal, trusted model selection made by a registered routing policy.
+	 * The model-callable subagent tool strips this marker from its input.
+	 */
+	policyRoute?: {
+		model: string;
+		thinking: string;
+	};
 	capabilityClass?: string;
 	escalationReason?: string;
 	risk?: string;

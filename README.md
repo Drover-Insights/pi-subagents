@@ -162,7 +162,7 @@ For a fuller example of the intended style, see the [scout agent gist by edxeth]
 | `enabled` | `true` | Set `false` to hide and block the agent |
 | `model` | Pi default | Child default model, including optional thinking suffix. When unset, the child inherits the parent's model. |
 | `thinking` | model default | Child thinking level. When unset, the child inherits the parent's thinking level. |
-| `allow-model-override` | `true` | Whether the parent Pi session may launch or resume this agent with a different model or thinking level. Leave it alone if you want to choose models per task from the parent chat. Set `false` when this agent should always use the model written in its file. |
+| `allow-model-override` | `true` | Whether the parent Pi session may launch or resume this agent with a caller-selected model or thinking level. Set `false` to ignore those caller choices and use the model written in the agent file. A registered launch-routing policy may still select the launch model after frontmatter enforcement. |
 | `allowed-models` | unset | Extra exact model refs the parent may choose when `allow-model-override` is enabled. The agent `model` is implicitly allowed and does not need to be repeated. `provider/model` allows any thinking level for that model; `provider/model:thinking` allows only that thinking level. |
 | `cwd` | parent cwd | Working directory for the child |
 | `extensions` | `all` | Which extension code loads in the child: `all`, `none`, or a comma-separated allowlist |
@@ -433,7 +433,7 @@ Resume: pi --session /path/to/child.jsonl
 
 This field changes only the text that the parent receives. The TUI still shows the context use to the user.
 
-Named-agent frontmatter wins over duplicate launch-time fields such as `tools`, `cwd`, and `mode`. `model` and `thinking` are different: while you are in a parent Pi session, you can ask Pi to run a subagent with a specific model or thinking level for that one launch or resume. That works by default. If an agent file sets `allow-model-override: false`, Pi ignores those per-launch model choices and uses the model from the agent file, or the inherited Pi model if the file does not name one. Use that opt-out for agents whose quality, cost, or safety depends on a specific model.
+Named-agent frontmatter wins over duplicate launch-time fields such as `tools`, `cwd`, and `mode`. `model` and `thinking` are different: while you are in a parent Pi session, you can ask Pi to run a subagent with a specific model or thinking level for that one launch or resume. That works by default. If an agent file sets `allow-model-override: false`, Pi ignores those caller-provided choices and uses the model from the agent file, or the inherited Pi model if the file does not name one. This lock applies to caller overrides. A registered routing policy can still select the model and thinking level for a routed launch after frontmatter enforcement; routed requests reject caller model and thinking fields before launch.
 
 Use `allowed-models` when an agent should have a small exact model menu:
 
@@ -446,7 +446,7 @@ allowed-models: openai/gpt-5.5:low, nahcrof/glm-5.1:off, anthropic/claude-opus-4
 ---
 ```
 
-`model` is the default and is always allowed. `allowed-models` lists the other models Pi may use for this agent, so you do not need to repeat `model`. The `:thinking` suffix is optional: `provider/model:low` allows only that thinking level, while `provider/model` allows the model with whatever thinking level Pi resolves. If `allow-model-override: false`, Pi ignores launch-time and resume-time model choices as usual.
+`model` is the default and is always allowed. `allowed-models` lists the other caller-selectable models Pi may use for this agent, so you do not need to repeat `model`. The `:thinking` suffix is optional: `provider/model:low` allows only that thinking level, while `provider/model` allows the model with whatever thinking level Pi resolves. If `allow-model-override: false`, Pi ignores caller-provided launch-time and resume-time model choices as usual. Registered launch-routing policies are separate from this caller override list and may select a routed launch model after frontmatter enforcement.
 
 ## LLM-as-a-verifier
 

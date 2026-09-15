@@ -74,9 +74,11 @@ describe("internal launch overrides (forcedCwd/launchEnv)", () => {
 			agent: "worker",
 			forcedCwd: "/tmp/worktree",
 			launchEnv: { COMPOSE_PROJECT_NAME: "bo-run-w0" },
+			policyRoute: { model: "provider/policy-model", thinking: "low" },
 		});
 		assert.equal(stripped.forcedCwd, undefined);
 		assert.equal(stripped.launchEnv, undefined);
+		assert.equal(stripped.policyRoute, undefined);
 		assert.equal(stripped.agent, "worker");
 		assert.equal(stripped.name, "cand");
 	});
@@ -84,9 +86,26 @@ describe("internal launch overrides (forcedCwd/launchEnv)", () => {
 	it("keeps the internal fields off the model-callable subagent tool schema", () => {
 		for (const schema of [SubagentParams, SubagentChildParams]) {
 			const properties = Object.keys(schema.properties ?? {});
-			assert.equal(properties.includes("forcedCwd"), false, `forcedCwd leaked onto ${JSON.stringify(properties)}`);
-			assert.equal(properties.includes("launchEnv"), false, `launchEnv leaked onto ${JSON.stringify(properties)}`);
-			assert.equal(properties.includes("cwd"), false, `cwd leaked onto ${JSON.stringify(properties)}`);
+			assert.equal(
+				properties.includes("forcedCwd"),
+				false,
+				`forcedCwd leaked onto ${JSON.stringify(properties)}`,
+			);
+			assert.equal(
+				properties.includes("launchEnv"),
+				false,
+				`launchEnv leaked onto ${JSON.stringify(properties)}`,
+			);
+			assert.equal(
+				properties.includes("policyRoute"),
+				false,
+				`policyRoute leaked onto ${JSON.stringify(properties)}`,
+			);
+			assert.equal(
+				properties.includes("cwd"),
+				false,
+				`cwd leaked onto ${JSON.stringify(properties)}`,
+			);
 		}
 	});
 

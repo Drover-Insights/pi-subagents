@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { resolveRoutingPolicy } from "../../src/routing/policy.ts";
+import {
+	type IrrelevantEscalationReason,
+	type MissingEscalationReason,
+	resolveRoutingPolicy,
+} from "../../src/routing/policy.ts";
 
 test("routes a literal Scout request to the pinned Luna model with low thinking", () => {
 	const route = resolveRoutingPolicy({
@@ -26,7 +30,7 @@ test("routes code-graph Scout work to Terra with low thinking only for control-f
 		escalationReason: "control_flow_required",
 		risk: "medium",
 	});
-	const withoutReason = resolveRoutingPolicy({
+	const withoutReason: MissingEscalationReason = resolveRoutingPolicy({
 		dispatchId: "dispatch-3",
 		agent: "pilot-scout",
 		mode: "background",
@@ -36,12 +40,21 @@ test("routes code-graph Scout work to Terra with low thinking only for control-f
 
 	assert.deepEqual(
 		{
-			withReason: { logicalRoute: withReason.logicalRoute, thinking: withReason.thinking },
+			withReason: {
+				logicalRoute: withReason.logicalRoute,
+				thinking: withReason.thinking,
+			},
 			withoutReason,
 		},
 		{
-			withReason: { logicalRoute: "openai-codex/gpt-5.6-terra", thinking: "low" },
-			withoutReason: { status: "policy_rejected", reason: "missing_escalation_reason" },
+			withReason: {
+				logicalRoute: "openai-codex/gpt-5.6-terra",
+				thinking: "low",
+			},
+			withoutReason: {
+				status: "policy_rejected",
+				reason: "missing_escalation_reason",
+			},
 		},
 	);
 });
@@ -92,6 +105,22 @@ test("rejects an irrelevant control-flow escalation reason for Worker implementa
 	});
 });
 
+test("rejects an architecture escalation reason for Worker implementation", () => {
+	const result = resolveRoutingPolicy({
+		dispatchId: "dispatch-worker-architecture-reason",
+		agent: "pilot-worker",
+		mode: "background",
+		capabilityClass: "worker.implementation",
+		escalationReason: "architecture_invariant_risk",
+		risk: "medium",
+	});
+
+	assert.deepEqual(result, {
+		status: "policy_rejected",
+		reason: "irrelevant_escalation_reason",
+	});
+});
+
 test("rejects an irrelevant control-flow escalation reason for literal Scout work", () => {
 	const result = resolveRoutingPolicy({
 		dispatchId: "dispatch-7",
@@ -108,6 +137,38 @@ test("rejects an irrelevant control-flow escalation reason for literal Scout wor
 	});
 });
 
+test("rejects an architecture escalation reason for literal Scout work", () => {
+	const result: IrrelevantEscalationReason = resolveRoutingPolicy({
+		dispatchId: "dispatch-scout-architecture-reason",
+		agent: "pilot-scout",
+		mode: "background",
+		capabilityClass: "scout.literal",
+		escalationReason: "architecture_invariant_risk",
+		risk: "low",
+	});
+
+	assert.deepEqual(result, {
+		status: "policy_rejected",
+		reason: "irrelevant_escalation_reason",
+	});
+});
+
+test("rejects an engineering escalation reason for literal Scout work", () => {
+	const result: IrrelevantEscalationReason = resolveRoutingPolicy({
+		dispatchId: "dispatch-scout-engineering-reason",
+		agent: "pilot-scout",
+		mode: "background",
+		capabilityClass: "scout.literal",
+		escalationReason: "difficult_code_grounded_debugging",
+		risk: "low",
+	});
+
+	assert.deepEqual(result, {
+		status: "policy_rejected",
+		reason: "irrelevant_escalation_reason",
+	});
+});
+
 test("rejects an irrelevant control-flow escalation reason for normal Reviewer work", () => {
 	const result = resolveRoutingPolicy({
 		dispatchId: "dispatch-8",
@@ -115,6 +176,22 @@ test("rejects an irrelevant control-flow escalation reason for normal Reviewer w
 		mode: "background",
 		capabilityClass: "reviewer.normal",
 		escalationReason: "control_flow_required",
+		risk: "high",
+	});
+
+	assert.deepEqual(result, {
+		status: "policy_rejected",
+		reason: "irrelevant_escalation_reason",
+	});
+});
+
+test("rejects an engineering escalation reason for normal Reviewer work", () => {
+	const result = resolveRoutingPolicy({
+		dispatchId: "dispatch-reviewer-engineering-reason",
+		agent: "pilot-reviewer",
+		mode: "background",
+		capabilityClass: "reviewer.normal",
+		escalationReason: "difficult_code_grounded_debugging",
 		risk: "high",
 	});
 
@@ -612,7 +689,7 @@ test("rejects a direct model override for a routing-enabled Scout", () => {
 		agent: "pilot-scout",
 		mode: "background",
 		capabilityClass: "scout.literal",
-		model: "openai-codex/gpt-6-astra",
+		model: "caller-override",
 		risk: "low",
 	});
 
@@ -644,7 +721,7 @@ test("rejects a direct model override for a routing-enabled Worker", () => {
 		agent: "pilot-worker",
 		mode: "background",
 		capabilityClass: "worker.implementation",
-		model: "openai-codex/gpt-6-astra",
+		model: "caller-override",
 		risk: "medium",
 	});
 
@@ -676,7 +753,7 @@ test("rejects a direct model override for a routing-enabled Reviewer", () => {
 		agent: "pilot-reviewer",
 		mode: "background",
 		capabilityClass: "reviewer.normal",
-		model: "openai-codex/gpt-6-astra",
+		model: "caller-override",
 		risk: "medium",
 	});
 
@@ -709,7 +786,7 @@ test("rejects a direct model override for the routing-enabled Frontier Critic", 
 		mode: "background",
 		capabilityClass: "frontier.architecture",
 		escalationReason: "architecture_invariant_risk",
-		model: "openai-codex/gpt-6-astra",
+		model: "caller-override",
 		risk: "high",
 	});
 
@@ -743,7 +820,7 @@ test("rejects a direct model override for the routing-enabled Frontier Engineer"
 		mode: "background",
 		capabilityClass: "frontier.engineering",
 		escalationReason: "difficult_code_grounded_debugging",
-		model: "anthropic/claude-fable-5-1",
+		model: "caller-override",
 		risk: "high",
 	});
 

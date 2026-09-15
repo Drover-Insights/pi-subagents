@@ -60,7 +60,8 @@ describe("artifact storage", () => {
 			if (dirname(ancestor) === ancestor) break;
 		}
 		const originalExistsSync = fs.existsSync;
-		fs.existsSync = (path) => !externalGitMarkers.has(String(path)) && originalExistsSync(path);
+		fs.existsSync = (path) =>
+			!externalGitMarkers.has(String(path)) && originalExistsSync(path);
 		syncBuiltinESMExports();
 		try {
 			assert.equal(resolveArtifactProjectRoot(nested), pkgRoot);
