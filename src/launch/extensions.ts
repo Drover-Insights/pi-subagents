@@ -35,17 +35,29 @@ function isProjectTrustedForLaunch(agentDefs: AgentDefaults | null, mode: Resume
 	return trusted;
 }
 
+type ConfiguredPackage = ReturnType<DefaultPackageManager["listConfiguredPackages"]>[number];
+
+function listConfiguredPackages(cwd: string, agentDir: string, projectTrusted: boolean): ConfiguredPackage[] {
+	const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted });
+	return new DefaultPackageManager({ cwd, agentDir, settingsManager }).listConfiguredPackages();
+}
+
 /**
  * Reuse configured, unfiltered package installations for child allowlists.
  * Unversioned npm sources match by package name. Git sources require the exact
  * configured source, including any ref, so managed reuse cannot change refs.
- * Other sources retain Pi's normal temporary CLI resolution semantics.
+ * A source the child Pi root does not configure falls back to the parent Pi
+ * root's user packages, so a child profile without packages still reuses the
+ * parent's managed install instead of a temporary copy that Pi never moves to
+ * a new pinned ref. Other sources retain Pi's normal temporary CLI resolution
+ * semantics.
  */
 export function resolveConfiguredExtensionSources(
 	sources: string[] | undefined,
 	options: {
 		cwd: string;
 		agentDir: string;
+		parentAgentDir?: string;
 		agentDefs: AgentDefaults | null;
 		mode: ResumeMode;
 	},
@@ -53,27 +65,26 @@ export function resolveConfiguredExtensionSources(
 	if (sources === undefined || sources.length === 0) return sources;
 
 	const projectTrusted = isProjectTrustedForLaunch(options.agentDefs, options.mode);
-	const settingsManager = SettingsManager.create(options.cwd, options.agentDir, {
-		projectTrusted,
-	});
-	const packageManager = new DefaultPackageManager({
-		cwd: options.cwd,
-		agentDir: options.agentDir,
-		settingsManager,
-	});
-	const configured = packageManager.listConfiguredPackages();
+	const configured = listConfiguredPackages(options.cwd, options.agentDir, projectTrusted);
+	// Project packages come from the shared cwd and are already in the child list.
+	const parentConfigured =
+		options.parentAgentDir && options.parentAgentDir !== options.agentDir
+			? listConfiguredPackages(options.cwd, options.parentAgentDir, false).filter((entry) => entry.scope === "user")
+			: [];
 	const resolved: string[] = [];
 
 	for (const source of sources) {
 		const npmSource = parseNpmSource(source);
-		const matches = configured.filter((entry) => {
+		const matchesSource = (entry: ConfiguredPackage) => {
 			if (entry.scope === "project" && !projectTrusted) return false;
 			if (npmSource && !npmSource.version) {
 				return parseNpmSource(entry.source)?.name === npmSource.name;
 			}
 			return isGitSource(source) && entry.source === source;
-		});
-		const match = matches.find((entry) => entry.scope === "project") ?? matches[0];
+		};
+		const matches = configured.filter(matchesSource);
+		const match =
+			matches.find((entry) => entry.scope === "project") ?? matches[0] ?? parentConfigured.find(matchesSource);
 		if (!match || match.filtered || !match.installedPath) {
 			resolved.push(source);
 			continue;
