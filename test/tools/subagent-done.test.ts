@@ -210,6 +210,115 @@ describe("subagent-done.ts", () => {
 			}
 		});
 
+		it("reports a background child that shuts down before its prompt reaches the model as an error", () => {
+			const cases = [
+				{ name: "background auto-exit", autoExit: true, surface: undefined, expected: "error" },
+				{ name: "background manual", autoExit: false, surface: undefined, expected: "error" },
+				{ name: "interactive auto-exit", autoExit: true, surface: "pane-1", expected: "done" },
+			];
+
+			const originalSession = process.env.PI_SUBAGENT_SESSION;
+			const originalAutoExit = process.env.PI_SUBAGENT_AUTO_EXIT;
+			const originalSurface = process.env.PI_SUBAGENT_SURFACE;
+			const dir = createTestDir();
+
+			try {
+				for (const testCase of cases) {
+					const handlers = new Map<string, any>();
+					const sessionFile = join(dir, `${testCase.name.replace(/\s/g, "-")}.jsonl`);
+					writeFileSync(sessionFile, "");
+
+					process.env.PI_SUBAGENT_SESSION = sessionFile;
+					if (testCase.autoExit) process.env.PI_SUBAGENT_AUTO_EXIT = "1";
+					else delete process.env.PI_SUBAGENT_AUTO_EXIT;
+					if (testCase.surface) process.env.PI_SUBAGENT_SURFACE = testCase.surface;
+					else delete process.env.PI_SUBAGENT_SURFACE;
+
+					subagentDoneExtension({
+						getAllTools: () => [],
+						getActiveTools: () => [],
+						setActiveTools() {},
+						registerTool(definition: { name: string }) {
+							return definition;
+						},
+						on(event: string, handler: any) {
+							handlers.set(event, handler);
+						},
+						appendEntry() {},
+						registerShortcut() {},
+						registerCommand() {},
+					} as any);
+
+					// An extension input handler returned "handled", so Pi never ran the
+					// prompt and print mode shut down with no message at all.
+					handlers.get("session_shutdown")?.();
+
+					const sidecar = JSON.parse(readFileSync(`${sessionFile}.exit`, "utf8"));
+					assert.equal(sidecar.type, testCase.expected, testCase.name);
+					if (testCase.expected === "error") {
+						assert.match(sidecar.errorMessage, /before its task prompt reached the model/, testCase.name);
+						// Pi also shuts down this way when startup fails (auth, model), and the
+						// real cause is only on the child's stderr.
+						assert.match(sidecar.errorMessage, /startup failed/, testCase.name);
+						assert.match(sidecar.errorMessage, /stderr/, testCase.name);
+					}
+				}
+			} finally {
+				if (originalSession == null) delete process.env.PI_SUBAGENT_SESSION;
+				else process.env.PI_SUBAGENT_SESSION = originalSession;
+				if (originalAutoExit == null) delete process.env.PI_SUBAGENT_AUTO_EXIT;
+				else process.env.PI_SUBAGENT_AUTO_EXIT = originalAutoExit;
+				if (originalSurface == null) delete process.env.PI_SUBAGENT_SURFACE;
+				else process.env.PI_SUBAGENT_SURFACE = originalSurface;
+				rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("reports a background resume launched without a task as done, not as a blocked prompt", () => {
+			const originalSession = process.env.PI_SUBAGENT_SESSION;
+			const originalAutoExit = process.env.PI_SUBAGENT_AUTO_EXIT;
+			const originalSurface = process.env.PI_SUBAGENT_SURFACE;
+			const originalWithoutTask = process.env.PI_SUBAGENT_RESUME_WITHOUT_TASK;
+			const dir = createTestDir();
+
+			try {
+				const handlers = new Map<string, any>();
+				const sessionFile = join(dir, "resume-without-task.jsonl");
+				writeFileSync(sessionFile, "");
+				process.env.PI_SUBAGENT_SESSION = sessionFile;
+				process.env.PI_SUBAGENT_AUTO_EXIT = "1";
+				delete process.env.PI_SUBAGENT_SURFACE;
+				process.env.PI_SUBAGENT_RESUME_WITHOUT_TASK = "1";
+
+				subagentDoneExtension({
+					getAllTools: () => [],
+					getActiveTools: () => [],
+					setActiveTools() {},
+					registerTool: (definition: unknown) => definition,
+					on: (event: string, handler: any) => handlers.set(event, handler),
+					appendEntry() {},
+					registerShortcut() {},
+					registerCommand() {},
+				} as any);
+
+				// `pi -p --session` with empty stdin never prompts: no message is expected.
+				handlers.get("session_shutdown")?.();
+
+				const sidecar = JSON.parse(readFileSync(`${sessionFile}.exit`, "utf8"));
+				assert.equal(sidecar.type, "done");
+			} finally {
+				if (originalSession == null) delete process.env.PI_SUBAGENT_SESSION;
+				else process.env.PI_SUBAGENT_SESSION = originalSession;
+				if (originalAutoExit == null) delete process.env.PI_SUBAGENT_AUTO_EXIT;
+				else process.env.PI_SUBAGENT_AUTO_EXIT = originalAutoExit;
+				if (originalSurface == null) delete process.env.PI_SUBAGENT_SURFACE;
+				else process.env.PI_SUBAGENT_SURFACE = originalSurface;
+				if (originalWithoutTask == null) delete process.env.PI_SUBAGENT_RESUME_WITHOUT_TASK;
+				else process.env.PI_SUBAGENT_RESUME_WITHOUT_TASK = originalWithoutTask;
+				rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
 		it("registers caller_ping and writes a ping exit sidecar", async () => {
 			const tools = new Map<string, any>();
 			const handlers = new Map<string, any>();

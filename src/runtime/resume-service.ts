@@ -428,6 +428,11 @@ async function resumeSubagentSessionWithoutWidth(
 	resumeEnvVars.PI_SUBAGENT_NAME = invocationMetadata?.name ?? name;
 	resumeEnvVars.PI_SUBAGENT_AGENT = resumedAgent ?? "";
 	resumeEnvVars.PI_SUBAGENT_SESSION = sessionFile;
+	// Without a task a background child gets empty stdin and never prompts; tell it
+	// so it does not report the missing turn as a blocked prompt. Interactive children
+	// skip that check and outlive the resume, so they must not pass the flag on.
+	resumeEnvVars.PI_SUBAGENT_RESUME_WITHOUT_TASK =
+		metadata.mode === "background" && expandedTask === undefined ? "1" : "";
 
 	const resumedAsync = invocationMetadata?.async ?? metadata.async ?? true;
 	resumeEnvVars.PI_SUBAGENT_AUTO_EXIT = resumedAutoExit ? "1" : "";
