@@ -1,5 +1,5 @@
 import { buildChildLaunchPlan } from "../../src/launch/child-launch-plan.ts";
-import { assert, createTestDir, describe, it, join, mkdirSync, writeFileSync } from "../support/index.ts";
+import { assert, beforeEach, createTestDir, describe, it, join, mkdirSync, writeFileSync } from "../support/index.ts";
 
 /**
  * The child launch plan is the foundation seam for agent definition and launch
@@ -7,6 +7,11 @@ import { assert, createTestDir, describe, it, join, mkdirSync, writeFileSync } f
  * model, cwd, and session path rules in separate modules.
  */
 describe("child launch plan", () => {
+	// Package reuse falls back to the parent Pi root; keep it off the developer's real one.
+	beforeEach(() => {
+		process.env.PI_CODING_AGENT_DIR = createTestDir();
+	});
+
 	it("resolves model, runtime paths, and child capability facts in one place", async () => {
 		const cwd = createTestDir();
 		const parentSessionDir = join(cwd, "parent-sessions");
@@ -168,6 +173,236 @@ describe("child launch plan", () => {
 		});
 
 		assert.deepEqual(plan.capability.extensions, ["git:github.com/example/footer-extension@v1"]);
+	});
+
+	it("reuses an exactly configured Git package from the parent Pi root when the child root has none", async () => {
+		const cwd = createTestDir();
+		const parentAgentDir = join(cwd, "parent-root");
+		const childAgentDir = join(cwd, "child-root");
+		const source = "git:github.com/example/footer-extension@0123456789abcdef0123456789abcdef01234567";
+		const packageRoot = join(parentAgentDir, "git", "github.com", "example", "footer-extension");
+		mkdirSync(packageRoot, { recursive: true });
+		mkdirSync(childAgentDir, { recursive: true });
+		writeFileSync(join(parentAgentDir, "settings.json"), JSON.stringify({ packages: [source] }));
+		writeFileSync(join(childAgentDir, "settings.json"), JSON.stringify({ retry: { enabled: false } }));
+		writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ name: "footer-extension", version: "1.0.0" }));
+		process.env.PI_CODING_AGENT_DIR = parentAgentDir;
+
+		const plan = await buildChildLaunchPlan({
+			params: {
+				name: "footer-check",
+				task: "report the footer version",
+				title: "Footer check",
+				agent: "reviewer",
+			},
+			agentDefs: {
+				extensions: source,
+				env: `PI_CODING_AGENT_DIR=${childAgentDir}`,
+			},
+			parentCwd: cwd,
+			parentSessionDir: join(cwd, "parent-sessions"),
+			mode: "background",
+		});
+
+		assert.deepEqual(plan.capability.extensions, [packageRoot]);
+	});
+
+	it("prefers the child Pi root over the parent Pi root for the same Git package", async () => {
+		const cwd = createTestDir();
+		const parentAgentDir = join(cwd, "parent-root");
+		const childAgentDir = join(cwd, "child-root");
+		const source = "git:github.com/example/footer-extension@0123456789abcdef0123456789abcdef01234567";
+		for (const agentDir of [parentAgentDir, childAgentDir]) {
+			const packageRoot = join(agentDir, "git", "github.com", "example", "footer-extension");
+			mkdirSync(packageRoot, { recursive: true });
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [source] }));
+			writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ name: "footer-extension", version: "1.0.0" }));
+		}
+		process.env.PI_CODING_AGENT_DIR = parentAgentDir;
+
+		const plan = await buildChildLaunchPlan({
+			params: {
+				name: "footer-check",
+				task: "report the footer version",
+				title: "Footer check",
+				agent: "reviewer",
+			},
+			agentDefs: {
+				extensions: source,
+				env: `PI_CODING_AGENT_DIR=${childAgentDir}`,
+			},
+			parentCwd: cwd,
+			parentSessionDir: join(cwd, "parent-sessions"),
+			mode: "background",
+		});
+
+		assert.deepEqual(plan.capability.extensions, [
+			join(childAgentDir, "git", "github.com", "example", "footer-extension"),
+		]);
+	});
+
+	it("keeps Git on temporary resolution when only the parent Pi root pins a different ref", async () => {
+		const cwd = createTestDir();
+		const parentAgentDir = join(cwd, "parent-root");
+		const childAgentDir = join(cwd, "child-root");
+		const packageRoot = join(parentAgentDir, "git", "github.com", "example", "footer-extension");
+		mkdirSync(packageRoot, { recursive: true });
+		mkdirSync(childAgentDir, { recursive: true });
+		writeFileSync(
+			join(parentAgentDir, "settings.json"),
+			JSON.stringify({ packages: ["git:github.com/example/footer-extension@v2"] }),
+		);
+		writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ name: "footer-extension", version: "2.0.0" }));
+		process.env.PI_CODING_AGENT_DIR = parentAgentDir;
+
+		const plan = await buildChildLaunchPlan({
+			params: {
+				name: "footer-check",
+				task: "report the footer version",
+				title: "Footer check",
+				agent: "reviewer",
+			},
+			agentDefs: {
+				extensions: "git:github.com/example/footer-extension@v1",
+				env: `PI_CODING_AGENT_DIR=${childAgentDir}`,
+			},
+			parentCwd: cwd,
+			parentSessionDir: join(cwd, "parent-sessions"),
+			mode: "background",
+		});
+
+		assert.deepEqual(plan.capability.extensions, ["git:github.com/example/footer-extension@v1"]);
+	});
+
+	it("does not reuse an untrusted project Git package through the parent Pi root", async () => {
+		const cwd = createTestDir();
+		const parentAgentDir = join(cwd, "parent-root");
+		const childAgentDir = join(cwd, "child-root");
+		const source = "git:github.com/example/footer-extension@0123456789abcdef0123456789abcdef01234567";
+		const projectPackageRoot = join(cwd, ".pi", "git", "github.com", "example", "footer-extension");
+		mkdirSync(projectPackageRoot, { recursive: true });
+		mkdirSync(parentAgentDir, { recursive: true });
+		mkdirSync(childAgentDir, { recursive: true });
+		writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ packages: [source] }));
+		writeFileSync(
+			join(projectPackageRoot, "package.json"),
+			JSON.stringify({ name: "footer-extension", version: "1.0.0" }),
+		);
+		process.env.PI_CODING_AGENT_DIR = parentAgentDir;
+
+		const plan = await buildChildLaunchPlan({
+			params: {
+				name: "footer-check",
+				task: "report the footer version",
+				title: "Footer check",
+				agent: "reviewer",
+			},
+			agentDefs: {
+				extensions: source,
+				trustProject: true,
+				env: `PI_CODING_AGENT_DIR=${childAgentDir}`,
+			},
+			parentCwd: cwd,
+			parentSessionDir: join(cwd, "parent-sessions"),
+			mode: "background",
+		});
+
+		assert.deepEqual(plan.capability.extensions, [source]);
+	});
+
+	it("does not fall through to the parent Pi root when the child filters the package", async () => {
+		const cwd = createTestDir();
+		const parentAgentDir = join(cwd, "parent-root");
+		const childAgentDir = join(cwd, "child-root");
+		const source = "git:github.com/example/footer-extension@0123456789abcdef0123456789abcdef01234567";
+		for (const agentDir of [parentAgentDir, childAgentDir]) {
+			const packageRoot = join(agentDir, "git", "github.com", "example", "footer-extension");
+			mkdirSync(packageRoot, { recursive: true });
+			writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ name: "footer-extension", version: "1.0.0" }));
+		}
+		writeFileSync(join(parentAgentDir, "settings.json"), JSON.stringify({ packages: [source] }));
+		writeFileSync(
+			join(childAgentDir, "settings.json"),
+			JSON.stringify({ packages: [{ source, extensions: [] }] }),
+		);
+		process.env.PI_CODING_AGENT_DIR = parentAgentDir;
+
+		const plan = await buildChildLaunchPlan({
+			params: {
+				name: "footer-check",
+				task: "report the footer version",
+				title: "Footer check",
+				agent: "reviewer",
+			},
+			agentDefs: {
+				extensions: source,
+				env: `PI_CODING_AGENT_DIR=${childAgentDir}`,
+			},
+			parentCwd: cwd,
+			parentSessionDir: join(cwd, "parent-sessions"),
+			mode: "background",
+		});
+
+		assert.deepEqual(plan.capability.extensions, [source]);
+	});
+
+	it("does not reuse an npm package from the parent Pi root", async () => {
+		const cwd = createTestDir();
+		const parentAgentDir = join(cwd, "parent-root");
+		const childAgentDir = join(cwd, "child-root");
+		const packageRoot = join(parentAgentDir, "npm", "node_modules", "pi-fancy-footer");
+		mkdirSync(packageRoot, { recursive: true });
+		mkdirSync(childAgentDir, { recursive: true });
+		writeFileSync(join(parentAgentDir, "settings.json"), JSON.stringify({ packages: ["npm:pi-fancy-footer"] }));
+		writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ name: "pi-fancy-footer", version: "1.4.0" }));
+		process.env.PI_CODING_AGENT_DIR = parentAgentDir;
+
+		const plan = await buildChildLaunchPlan({
+			params: {
+				name: "footer-check",
+				task: "report the footer version",
+				title: "Footer check",
+				agent: "reviewer",
+			},
+			agentDefs: {
+				extensions: "npm:pi-fancy-footer",
+				env: `PI_CODING_AGENT_DIR=${childAgentDir}`,
+			},
+			parentCwd: cwd,
+			parentSessionDir: join(cwd, "parent-sessions"),
+			mode: "background",
+		});
+
+		assert.deepEqual(plan.capability.extensions, ["npm:pi-fancy-footer"]);
+	});
+
+	it("keeps temporary resolution when the parent Pi root cannot be read", async () => {
+		const cwd = createTestDir();
+		const parentAgentDir = join(cwd, "parent-root");
+		const childAgentDir = join(cwd, "child-root");
+		const source = "git:github.com/example/footer-extension@0123456789abcdef0123456789abcdef01234567";
+		mkdirSync(parentAgentDir, { recursive: true });
+		mkdirSync(childAgentDir, { recursive: true });
+		writeFileSync(join(parentAgentDir, "settings.json"), JSON.stringify({ packages: [null] }));
+		process.env.PI_CODING_AGENT_DIR = parentAgentDir;
+
+		const plan = await buildChildLaunchPlan({
+			params: {
+				name: "footer-check",
+				task: "report the footer version",
+				title: "Footer check",
+				agent: "reviewer",
+			},
+			agentDefs: {
+				extensions: source,
+				env: `PI_CODING_AGENT_DIR=${childAgentDir}`,
+			},
+			parentCwd: cwd,
+			parentSessionDir: join(cwd, "parent-sessions"),
+			mode: "background",
+		});
+
+		assert.deepEqual(plan.capability.extensions, [source]);
 	});
 
 	it("keeps temporary resolution when a configured npm package is not installed", async () => {

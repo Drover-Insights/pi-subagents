@@ -1,7 +1,7 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
-import type { AgentDefaults } from "../agents/definitions.ts";
+import { type AgentDefaults, getAgentConfigDir } from "../agents/definitions.ts";
 import { assertModelAllowed, splitModelRef } from "../agents/model-refs.ts";
 import { buildSubagentSessionTitle } from "../agents/titles.ts";
 import { generateSubagentSessionFile, type ResumeMode } from "../session/session-files.ts";
@@ -239,6 +239,7 @@ export async function buildChildLaunchPlan(options: ChildLaunchPlanOptions): Pro
 	const extensions = resolveConfiguredExtensionSources(extensionSources, {
 		cwd: runtimePaths.effectiveCwd ?? parentCwd,
 		agentDir: runtimePaths.effectiveAgentConfigDir,
+		parentAgentDir: getAgentConfigDir(),
 		agentDefs,
 		mode: options.mode ?? "background",
 	});
