@@ -3,7 +3,16 @@ import { EventEmitter } from "node:events";
 import { watchBackgroundSubagent } from "../../src/runtime/background-watch.ts";
 import { writeSubagentExitSidecar } from "../../src/session/exit-sidecar.ts";
 import type { RunningSubagent } from "../../src/types.ts";
-import { afterEach, assert, createSessionFile, createTestDir, describe, it, rmSync } from "../support/index.ts";
+import {
+	afterEach,
+	assert,
+	createSessionFile,
+	createTestDir,
+	describe,
+	it,
+	rmSync,
+	subagentDoneExtension,
+} from "../support/index.ts";
 
 const dirs: string[] = [];
 
@@ -134,5 +143,57 @@ describe("background watcher final context usage", () => {
 
 		assert.equal(result.contextTokens, undefined);
 		assert.equal(result.contextWindow, undefined);
+	});
+});
+
+describe("background watcher pre-turn exit", () => {
+	it("surfaces why a child exited before its prompt reached the model instead of reporting no output", async () => {
+		const dir = createTestDir();
+		const sessionFile = createSessionFile(dir, []);
+		const originalSession = process.env.PI_SUBAGENT_SESSION;
+		const originalAutoExit = process.env.PI_SUBAGENT_AUTO_EXIT;
+		const originalSurface = process.env.PI_SUBAGENT_SURFACE;
+		try {
+			process.env.PI_SUBAGENT_SESSION = sessionFile;
+			process.env.PI_SUBAGENT_AUTO_EXIT = "1";
+			delete process.env.PI_SUBAGENT_SURFACE;
+			const handlers = new Map<string, any>();
+			subagentDoneExtension({
+				getAllTools: () => [],
+				getActiveTools: () => [],
+				setActiveTools() {},
+				registerTool: (definition: unknown) => definition,
+				on: (event: string, handler: any) => handlers.set(event, handler),
+				appendEntry() {},
+				registerShortcut() {},
+				registerCommand() {},
+			} as any);
+
+			const child = new EventEmitter() as ChildProcess;
+			const running = makeRunning(sessionFile, child);
+			running.launchEntryCount = 1;
+			const resultPromise = watchBackgroundSubagent(
+				running,
+				{ cleanupNoSessionSessionFile() {}, terminateBackgroundChildProcess() {} },
+				new AbortController().signal,
+			);
+			// A routing extension handled the prompt, so Pi shut down cleanly
+			// without ever starting the agent loop.
+			handlers.get("session_shutdown")?.();
+			child.emit("exit", 0);
+			const result = await resultPromise;
+
+			assert.equal(result.exitCode, 1);
+			assert.notEqual(result.summary, "Background agent exited without output");
+			assert.match(result.errorMessage ?? "", /before its task prompt reached the model/);
+		} finally {
+			if (originalSession == null) delete process.env.PI_SUBAGENT_SESSION;
+			else process.env.PI_SUBAGENT_SESSION = originalSession;
+			if (originalAutoExit == null) delete process.env.PI_SUBAGENT_AUTO_EXIT;
+			else process.env.PI_SUBAGENT_AUTO_EXIT = originalAutoExit;
+			if (originalSurface == null) delete process.env.PI_SUBAGENT_SURFACE;
+			else process.env.PI_SUBAGENT_SURFACE = originalSurface;
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

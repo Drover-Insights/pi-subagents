@@ -106,6 +106,10 @@ export default function (pi: ExtensionAPI) {
 	const denied: string[] = getDeniedToolNames(autoExit);
 	let outputTokens = 0;
 	let finalContextUsage: FinalContextSnapshot | undefined;
+	// Set once any message enters the agent loop. A headless child that shuts
+	// down without one never ran its task: an extension `input` handler returned
+	// "handled" (or startup failed), and its notification is invisible in `-p`.
+	let promptReachedAgent = false;
 	// Factory-scoped because the takeover machinery that suppresses it lives
 	// inside the `if (autoExit)` block, while caller_ping registers outside it.
 	const callerPingState = createCallerPingState();
@@ -265,6 +269,7 @@ export default function (pi: ExtensionAPI) {
 			stopReason?: string;
 			usage?: { output?: number };
 		};
+		promptReachedAgent = true;
 		if (message.role !== "assistant") return;
 		if (!message.usage) return;
 		outputTokens += message.usage.output ?? 0;
@@ -283,6 +288,18 @@ export default function (pi: ExtensionAPI) {
 				type: "error",
 				errorMessage: pendingProviderError.errorMessage,
 				stopReason: pendingProviderError.stopReason,
+				outputTokens,
+			});
+			return;
+		}
+		if (!isInteractive && !promptReachedAgent) {
+			writeExitSignal({
+				type: "error",
+				errorMessage:
+					"Subagent exited before its task prompt reached the model. An extension likely handled or " +
+					"blocked the prompt (for example a routing or policy guard); its notification is not " +
+					"visible in a background child.",
+				stopReason: "error",
 				outputTokens,
 			});
 			return;
