@@ -46,8 +46,8 @@ function listConfiguredPackages(cwd: string, agentDir: string, projectTrusted: b
  * Reuse configured, unfiltered package installations for child allowlists.
  * Unversioned npm sources match by package name. Git sources require the exact
  * configured source, including any ref, so managed reuse cannot change refs.
- * A source the child Pi root does not configure falls back to the parent Pi
- * root's user packages, so a child profile without packages still reuses the
+ * A Git source the child Pi root does not configure falls back to the parent
+ * Pi root's user packages, so a child profile without packages still reuses the
  * parent's managed install instead of a temporary copy that Pi never moves to
  * a new pinned ref. Other sources retain Pi's normal temporary CLI resolution
  * semantics.
@@ -66,11 +66,23 @@ export function resolveConfiguredExtensionSources(
 
 	const projectTrusted = isProjectTrustedForLaunch(options.agentDefs, options.mode);
 	const configured = listConfiguredPackages(options.cwd, options.agentDir, projectTrusted);
-	// Project packages come from the shared cwd and are already in the child list.
-	const parentConfigured =
-		options.parentAgentDir && options.parentAgentDir !== options.agentDir
-			? listConfiguredPackages(options.cwd, options.parentAgentDir, false).filter((entry) => entry.scope === "user")
-			: [];
+	let parentConfigured: ConfiguredPackage[] | undefined;
+	// Read the parent root only when needed. Its project packages come from the
+	// shared cwd and are already in the child list. An unreadable parent root only
+	// loses the fallback; it must not block a launch that never depended on it.
+	const listParentPackages = (): ConfiguredPackage[] => {
+		if (parentConfigured) return parentConfigured;
+		parentConfigured = [];
+		if (!options.parentAgentDir || options.parentAgentDir === options.agentDir) return parentConfigured;
+		try {
+			parentConfigured = listConfiguredPackages(options.cwd, options.parentAgentDir, false).filter(
+				(entry) => entry.scope === "user",
+			);
+		} catch {
+			// Keep the empty list.
+		}
+		return parentConfigured;
+	};
 	const resolved: string[] = [];
 
 	for (const source of sources) {
@@ -84,7 +96,9 @@ export function resolveConfiguredExtensionSources(
 		};
 		const matches = configured.filter(matchesSource);
 		const match =
-			matches.find((entry) => entry.scope === "project") ?? matches[0] ?? parentConfigured.find(matchesSource);
+			matches.find((entry) => entry.scope === "project") ??
+			matches[0] ??
+			(isGitSource(source) ? listParentPackages().find(matchesSource) : undefined);
 		if (!match || match.filtered || !match.installedPath) {
 			resolved.push(source);
 			continue;
