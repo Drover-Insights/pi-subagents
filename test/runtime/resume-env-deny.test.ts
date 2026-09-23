@@ -452,4 +452,100 @@ describe("subagent_resume prompt expectation", () => {
 			else process.env.PI_SUBAGENT_RESUME_WITHOUT_TASK = originalWithoutTask;
 		}
 	});
+
+	it("does not tell an interactive child resumed without a task to skip the prompt check", async () => {
+		// An interactive session outlives the resume and can launch fresh children,
+		// which inherit its env; the flag must not reach them.
+		const dir = createTestDir();
+		const capsuleRoot = join(dir, "capsules");
+		mkdirSync(capsuleRoot, { recursive: true });
+		const binDir = join(dir, "bin");
+		mkdirSync(binDir, { recursive: true });
+		const logFile = join(dir, "tmux.log");
+		writeExecutable(
+			binDir,
+			"tmux",
+			`#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$FAKE_TMUX_LOG"
+case "$1" in
+  new-window) printf '%%42\\n' ;;
+esac
+`,
+		);
+		const originalPath = process.env.PATH;
+		const originalMux = process.env.PI_SUBAGENT_MUX;
+		const originalTmux = process.env.TMUX;
+		const originalCapsuleDir = process.env.PI_SUBAGENT_ENV_CAPSULE_DIR;
+		const originalWithoutTask = process.env.PI_SUBAGENT_RESUME_WITHOUT_TASK;
+		process.env.PATH = `${binDir}:${originalPath ?? ""}`;
+		process.env.PI_SUBAGENT_MUX = "tmux";
+		process.env.TMUX = "fake-tmux-socket";
+		process.env.FAKE_TMUX_LOG = logFile;
+		process.env.PI_SUBAGENT_ENV_CAPSULE_DIR = capsuleRoot;
+		// A parent that is itself a task-less background resume must not leak the flag either.
+		process.env.PI_SUBAGENT_RESUME_WITHOUT_TASK = "1";
+
+		try {
+			const sessionFile = join(dir, "interactive-without-task.jsonl");
+			writeFileSync(
+				sessionFile,
+				JSON.stringify({
+					type: "session",
+					version: 3,
+					id: "interactive-without-task",
+					timestamp: new Date().toISOString(),
+					cwd: dir,
+				}) + "\n",
+			);
+			await writeSubagentLaunchMetadataEntryForTest(sessionFile, {
+				version: 1,
+				timestamp: new Date().toISOString(),
+				name: "interactive-without-task",
+				mode: "interactive",
+				sessionMode: "fork",
+				parentClosePolicy: "terminate",
+				async: true,
+				denyTools: [],
+				noContextFiles: false,
+				noSession: false,
+				agentConfigDir: dir,
+				cwd: dir,
+				boundarySystemPrompt: false,
+			});
+
+			const quietResult = async () => ({ name: "", task: "", summary: "", exitCode: 0, elapsed: 0 });
+			await resumeSubagentSession(
+				{ sessionFile },
+				{
+					isMuxAvailable: () => true,
+					getShellReadyDelayMs: () => 0,
+					watchBackgroundSubagent: quietResult,
+					watchSubagent: quietResult,
+					getWatcherSignal: (_running: any, controller: AbortController) => controller.signal,
+					startWidgetRefresh: () => {},
+					getContextWindow: () => undefined,
+					runningSubagents: new Map<string, any>(),
+				},
+			);
+
+			const log = readFileSync(logFile, "utf8");
+			const capsuleMatch = log.match(/run-child\.mjs' '([^']+)'/);
+			assert.ok(capsuleMatch, "expected the resume command to invoke the capsule launcher");
+			const capsule = JSON.parse(readFileSync(capsuleMatch[1], "utf8"));
+			assert.equal(capsule.overrides.PI_SUBAGENT_RESUME_WITHOUT_TASK, "");
+		} finally {
+			if (originalPath === undefined) delete process.env.PATH;
+			else process.env.PATH = originalPath;
+			if (originalMux === undefined) delete process.env.PI_SUBAGENT_MUX;
+			else process.env.PI_SUBAGENT_MUX = originalMux;
+			if (originalTmux === undefined) delete process.env.TMUX;
+			else process.env.TMUX = originalTmux;
+			if (originalCapsuleDir === undefined) delete process.env.PI_SUBAGENT_ENV_CAPSULE_DIR;
+			else process.env.PI_SUBAGENT_ENV_CAPSULE_DIR = originalCapsuleDir;
+			if (originalWithoutTask === undefined) delete process.env.PI_SUBAGENT_RESUME_WITHOUT_TASK;
+			else process.env.PI_SUBAGENT_RESUME_WITHOUT_TASK = originalWithoutTask;
+			delete process.env.FAKE_TMUX_LOG;
+			rmSync(capsuleRoot, { recursive: true, force: true });
+		}
+	});
 });
