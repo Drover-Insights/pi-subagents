@@ -390,3 +390,66 @@ esac
 		}
 	});
 });
+
+describe("subagent_resume prompt expectation", () => {
+	it("tells a background child resumed without a task that no prompt is coming", async () => {
+		const dir = createTestDir();
+		const originalCommand = process.env.PI_SUBAGENT_PI_COMMAND;
+		const originalWithoutTask = process.env.PI_SUBAGENT_RESUME_WITHOUT_TASK;
+		// A parent that is itself a task-less resume must not leak the flag.
+		process.env.PI_SUBAGENT_RESUME_WITHOUT_TASK = "1";
+		const resumeAndCapture = async (name: string, task: string | undefined) => {
+			const captured = join(dir, `${name}.txt`);
+			process.env.PI_SUBAGENT_PI_COMMAND = writeExecutable(
+				dir,
+				`capture-${name}`,
+				"#!/usr/bin/env bash\ncat > /dev/null\nprintf '[%s]' \"${PI_SUBAGENT_RESUME_WITHOUT_TASK:-}\" > " +
+					JSON.stringify(captured) +
+					"\n",
+			);
+			const sessionFile = join(dir, `${name}.jsonl`);
+			writeFileSync(
+				sessionFile,
+				JSON.stringify({ type: "session", version: 3, id: name, timestamp: new Date().toISOString(), cwd: dir }) +
+					"\n",
+			);
+			await writeSubagentLaunchMetadataEntryForTest(sessionFile, {
+				version: 1,
+				timestamp: new Date().toISOString(),
+				name,
+				mode: "background",
+				sessionMode: "lineage-only",
+				autoExit: true,
+				parentClosePolicy: "terminate",
+				async: true,
+				denyTools: [],
+				noContextFiles: false,
+				noSession: false,
+				agentConfigDir: dir,
+				cwd: dir,
+				boundarySystemPrompt: false,
+			});
+			const quietResult = async () => ({ name: "", task: "", summary: "", exitCode: 0, elapsed: 0 });
+			await resumeSubagentSession(task === undefined ? { sessionFile } : { sessionFile, task }, {
+				isMuxAvailable: () => true,
+				getShellReadyDelayMs: () => 0,
+				watchBackgroundSubagent: quietResult,
+				watchSubagent: quietResult,
+				getWatcherSignal: (_running: any, controller: AbortController) => controller.signal,
+				startWidgetRefresh: () => {},
+				getContextWindow: () => undefined,
+				runningSubagents: new Map<string, any>(),
+			});
+			return readNonEmptyFileEventually(captured);
+		};
+		try {
+			assert.equal(await resumeAndCapture("without-task", undefined), "[1]");
+			assert.equal(await resumeAndCapture("with-task", "Continue."), "[]");
+		} finally {
+			if (originalCommand == null) delete process.env.PI_SUBAGENT_PI_COMMAND;
+			else process.env.PI_SUBAGENT_PI_COMMAND = originalCommand;
+			if (originalWithoutTask == null) delete process.env.PI_SUBAGENT_RESUME_WITHOUT_TASK;
+			else process.env.PI_SUBAGENT_RESUME_WITHOUT_TASK = originalWithoutTask;
+		}
+	});
+});

@@ -257,6 +257,10 @@ describe("subagent-done.ts", () => {
 					assert.equal(sidecar.type, testCase.expected, testCase.name);
 					if (testCase.expected === "error") {
 						assert.match(sidecar.errorMessage, /before its task prompt reached the model/, testCase.name);
+						// Pi also shuts down this way when startup fails (auth, model), and the
+						// real cause is only on the child's stderr.
+						assert.match(sidecar.errorMessage, /startup failed/, testCase.name);
+						assert.match(sidecar.errorMessage, /stderr/, testCase.name);
 					}
 				}
 			} finally {
@@ -266,6 +270,51 @@ describe("subagent-done.ts", () => {
 				else process.env.PI_SUBAGENT_AUTO_EXIT = originalAutoExit;
 				if (originalSurface == null) delete process.env.PI_SUBAGENT_SURFACE;
 				else process.env.PI_SUBAGENT_SURFACE = originalSurface;
+				rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("reports a background resume launched without a task as done, not as a blocked prompt", () => {
+			const originalSession = process.env.PI_SUBAGENT_SESSION;
+			const originalAutoExit = process.env.PI_SUBAGENT_AUTO_EXIT;
+			const originalSurface = process.env.PI_SUBAGENT_SURFACE;
+			const originalWithoutTask = process.env.PI_SUBAGENT_RESUME_WITHOUT_TASK;
+			const dir = createTestDir();
+
+			try {
+				const handlers = new Map<string, any>();
+				const sessionFile = join(dir, "resume-without-task.jsonl");
+				writeFileSync(sessionFile, "");
+				process.env.PI_SUBAGENT_SESSION = sessionFile;
+				process.env.PI_SUBAGENT_AUTO_EXIT = "1";
+				delete process.env.PI_SUBAGENT_SURFACE;
+				process.env.PI_SUBAGENT_RESUME_WITHOUT_TASK = "1";
+
+				subagentDoneExtension({
+					getAllTools: () => [],
+					getActiveTools: () => [],
+					setActiveTools() {},
+					registerTool: (definition: unknown) => definition,
+					on: (event: string, handler: any) => handlers.set(event, handler),
+					appendEntry() {},
+					registerShortcut() {},
+					registerCommand() {},
+				} as any);
+
+				// `pi -p --session` with empty stdin never prompts: no message is expected.
+				handlers.get("session_shutdown")?.();
+
+				const sidecar = JSON.parse(readFileSync(`${sessionFile}.exit`, "utf8"));
+				assert.equal(sidecar.type, "done");
+			} finally {
+				if (originalSession == null) delete process.env.PI_SUBAGENT_SESSION;
+				else process.env.PI_SUBAGENT_SESSION = originalSession;
+				if (originalAutoExit == null) delete process.env.PI_SUBAGENT_AUTO_EXIT;
+				else process.env.PI_SUBAGENT_AUTO_EXIT = originalAutoExit;
+				if (originalSurface == null) delete process.env.PI_SUBAGENT_SURFACE;
+				else process.env.PI_SUBAGENT_SURFACE = originalSurface;
+				if (originalWithoutTask == null) delete process.env.PI_SUBAGENT_RESUME_WITHOUT_TASK;
+				else process.env.PI_SUBAGENT_RESUME_WITHOUT_TASK = originalWithoutTask;
 				rmSync(dir, { recursive: true, force: true });
 			}
 		});

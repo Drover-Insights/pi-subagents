@@ -103,6 +103,8 @@ export default function (pi: ExtensionAPI) {
 		: { type: "object", properties: {}, additionalProperties: false };
 	const autoExit = process.env.PI_SUBAGENT_AUTO_EXIT === "1";
 	const isInteractive = !!process.env.PI_SUBAGENT_SURFACE;
+	// A resume without a task starts `pi -p` with empty stdin, so no prompt is expected.
+	const promptExpected = process.env.PI_SUBAGENT_RESUME_WITHOUT_TASK !== "1";
 	const denied: string[] = getDeniedToolNames(autoExit);
 	let outputTokens = 0;
 	let finalContextUsage: FinalContextSnapshot | undefined;
@@ -292,13 +294,14 @@ export default function (pi: ExtensionAPI) {
 			});
 			return;
 		}
-		if (!isInteractive && !promptReachedAgent) {
+		if (!isInteractive && promptExpected && !promptReachedAgent) {
 			writeExitSignal({
 				type: "error",
 				errorMessage:
-					"Subagent exited before its task prompt reached the model. An extension likely handled or " +
-					"blocked the prompt (for example a routing or policy guard); its notification is not " +
-					"visible in a background child.",
+					"Subagent exited before its task prompt reached the model. Either an extension handled or " +
+					"blocked the prompt (for example a routing or policy guard), or Pi startup failed (for " +
+					"example missing auth or model). Check the child's stderr for the cause; notifications " +
+					"are not visible in a background child.",
 				stopReason: "error",
 				outputTokens,
 			});
