@@ -1,4 +1,5 @@
 import type { ChildProcess } from "node:child_process";
+import type { ManagedRoutingEvidence } from "./routing/launch-authorization.ts";
 import type { PersistedSubagentLaunchMetadata } from "./session/session-files.ts";
 
 export type DeliveryState = "detached" | "awaited";
@@ -21,6 +22,15 @@ export interface SubagentTimeoutBudget {
 	idleTimeoutSeconds?: number;
 }
 
+/** The fixed route and resources the routing policy authorized for a managed child. */
+export interface PolicyLaunch {
+	model: string;
+	thinking: string;
+	extensions: string[];
+	skills: string;
+	noContextFiles: boolean;
+}
+
 export interface SubagentParamsInput {
 	name: string;
 	task: string;
@@ -30,16 +40,12 @@ export interface SubagentParamsInput {
 	model?: string;
 	thinking?: string;
 	/**
-	 * Internal, trusted model selection made by a registered routing policy.
+	 * Internal, trusted launch selected by the canonical routing policy.
 	 * The model-callable subagent tool strips this marker from its input.
 	 */
-	policyRoute?: {
-		model: string;
-		thinking: string;
-	};
+	policyLaunch?: PolicyLaunch;
 	capabilityClass?: string;
-	escalationReason?: string;
-	risk?: string;
+	pilotCase?: string;
 	skills?: string;
 	injectSkills?: string;
 	tools?: string;
@@ -131,6 +137,8 @@ export interface RunningSubagent {
 	task: string;
 	title?: string;
 	agent?: string;
+	/** Launch authority of a policy-managed child; later parent requests are gated against it. */
+	routing?: ManagedRoutingEvidence;
 	mode: "interactive" | "background";
 	executionState: "starting" | "running";
 	deliveryState: DeliveryState;

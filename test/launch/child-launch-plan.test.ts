@@ -658,9 +658,12 @@ describe("child launch plan", () => {
 				task: "Map the route",
 				title: "Route map",
 				agent: "pilot-scout",
-				policyRoute: {
+				policyLaunch: {
 					model: "openai-codex/gpt-5.6-luna",
 					thinking: "low",
+					extensions: [],
+					skills: "none",
+					noContextFiles: true,
 				},
 			},
 			agentDefs: {
@@ -686,9 +689,12 @@ describe("child launch plan", () => {
 			task: "Map the route",
 			title: "Route map",
 			agent: "pilot-scout",
-			policyRoute: {
+			policyLaunch: {
 				model: "openai-codex/gpt-5.6-luna",
 				thinking: "low",
+				extensions: [],
+				skills: "none",
+				noContextFiles: true,
 			},
 		};
 		const options = {
@@ -728,7 +734,7 @@ describe("child launch plan", () => {
 					...options,
 					params: {
 						...params,
-						policyRoute: { ...params.policyRoute, thinking: "unsupported" },
+						policyLaunch: { ...params.policyLaunch, thinking: "unsupported" },
 					},
 					modelRegistry: {
 						getAvailable: () => [

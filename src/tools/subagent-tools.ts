@@ -10,6 +10,7 @@ import {
 	shouldUseBackgroundLaunch,
 } from "../launch/policy.ts";
 import type { SubagentLaunchContext } from "../launch/prep.ts";
+import { type PilotAttemptLedger, unavailablePilotAttemptLedger } from "../routing/launch-authorization.ts";
 import { findRunningSubagent } from "../runtime/running-registry.ts";
 import {
 	claimSpawnWidthSlot,
@@ -26,17 +27,14 @@ import {
 	markSubagentBatchBlocking,
 } from "../runtime/state.ts";
 import { parseSpawnEnv, resolveSpawnPolicy } from "../spawn/policy.ts";
-import type { RunningSubagent, SubagentParamsInput, SubagentResult } from "../types.ts";
+import type { PolicyLaunch, RunningSubagent, SubagentParamsInput, SubagentResult } from "../types.ts";
 import { resolveVerifierCandidateCount } from "../vf/criteria.ts";
 import { launchVerifiedFanOut } from "../vf/run/launch.ts";
 
 import { formatSubagentBatchLines, formatTaskPreview, renderSubagentCompletionText } from "./message-renderers.ts";
-import {
-	type ResolvedSubagentRoute,
-	resolveSubagentRouting,
-} from "./model-routing.ts";
 import { applySynchronousLaunchPolicy, getBackgroundAutoExitWarning, getSubagentToolsWarning } from "./policy.ts";
 import { registerSetTabTitleTool } from "./set-tab-title.ts";
+import { authorizeSubagentLaunches, releasePilotAttempts, reservePilotAttempts } from "./subagent-routing.ts";
 import { SubagentParams } from "./subagent-schema.ts";
 import { SET_TAB_TITLE_TOOL_NAME, SUBAGENT_KILL_TOOL_NAME, SUBAGENT_TOOL_NAME } from "./tool-names.ts";
 
@@ -66,6 +64,8 @@ export interface SubagentToolRuntime {
 	getLaunchedSubagentResult(running: RunningSubagent, signal?: AbortSignal): Promise<ToolResult>;
 	stopRunningSubagent(running: RunningSubagent): Promise<void>;
 	muxUnavailableResult(action: string): unknown;
+	/** Pilot attempt reservations; defaults to failing closed. */
+	pilotAttempts?: PilotAttemptLedger;
 }
 
 type SubagentToolParams = Partial<SubagentParamsInput> & {
@@ -205,11 +205,11 @@ async function launchOneSubagent(
 	ctx: ExtensionContext,
 	runtime: SubagentToolRuntime,
 	pi: ExtensionAPI,
-	route?: ResolvedSubagentRoute,
+	policyLaunch?: PolicyLaunch,
 ): Promise<RunningSubagent> {
 	const effectiveParams = enforceAgentFrontmatter(params, agentDefs);
-	if (route) {
-		effectiveParams.policyRoute = route;
+	if (policyLaunch) {
+		effectiveParams.policyLaunch = policyLaunch;
 	}
 	// In print/prompt-style runs there is no durable parent turn for async steer
 	// delivery. Force blocking and record the batch as blocking too, so a stop
@@ -367,7 +367,7 @@ export function registerSubagentCoreTools(
 				"- If launching multiple helpers for one user request, make one subagent call with children:[...] so all helpers start before any waiting happens.\n" +
 				"- If the user names multiple agents, include each named agent exactly once. Do not substitute one agent for another.\n" +
 				"- Leave model/thinking unset unless the user named concrete values. Do not infer them from quality, depth, urgency, safety, or cost language.\n" +
-				"- For routing-enabled pilot agents, leave model and thinking unset even when the user names concrete values; the routing policy selects both.\n" +
+				"- For policy-managed agents, leave model and thinking unset even when the user names concrete values; the routing policy selects both.\n" +
 				"\n" +
 				"Writing tasks:\n" +
 				"- Translate the user's request into each helper's task; do not change the work just because of the agent name.\n" +
@@ -392,20 +392,14 @@ export function registerSubagentCoreTools(
 						warning:
 							getSubagentToolsWarning(agentDefs?.tools) ??
 							getBackgroundAutoExitWarning(agentDefs, shouldUseBackgroundLaunch(child, agentDefs, ctx.hasUI)),
-						route: undefined as ResolvedSubagentRoute | undefined,
 					};
 				});
-				for (const entry of prepared) {
-					const policyResult = resolveSubagentRouting(toolCallId, entry.child, entry.agentDefs);
-					if (!policyResult) continue;
-					if ("status" in policyResult) {
-						return asSubagentToolResult({
-							content: [{ type: "text", text: `Routing policy rejected the request: ${policyResult.reason}.` }],
-							details: policyResult,
-						});
-					}
-					entry.route = { model: policyResult.logicalRoute, thinking: policyResult.thinking };
-				}
+				const routing = authorizeSubagentLaunches(prepared, {
+					launchId: toolCallId,
+					hasUI: ctx.hasUI,
+					forceSynchronous: shouldForceSynchronousLaunch(ctx.hasUI),
+				});
+				if (!Array.isArray(routing)) return routing;
 				// Slot cost per child: 1 normally, N candidates for a verified
 				// fan-out (SPEC: N candidates consume N spawn slots, reserved
 				// atomically before any worktree creation or verifier spend).
@@ -416,6 +410,12 @@ export function registerSubagentCoreTools(
 				);
 				const totalSlots = slotCosts.reduce((sum, cost) => sum + cost, 0);
 				if (!tryAcquireSlots(totalSlots, widthLimit)) return getSpawnWidthLimitError(widthLimit);
+				const pilotAttempts = runtime.pilotAttempts ?? unavailablePilotAttemptLedger;
+				const reservationRejection = reservePilotAttempts(routing, pilotAttempts);
+				if (reservationRejection) {
+					releaseSlots(totalSlots);
+					return reservationRejection;
+				}
 				let unlaunchedSlots = totalSlots;
 				const hasBlockingChild = prepared.some((entry) => entry.blocking);
 				const launched: RunningSubagent[] = [];
@@ -433,8 +433,10 @@ export function registerSubagentCoreTools(
 							ctx,
 							runtime,
 							pi,
-							entry.route,
+							routing[index].policyLaunch,
 						);
+						const evidence = routing[index].evidence;
+						if (evidence.status === "managed") running.routing = evidence;
 						unlaunchedSlots -= slotCosts[index];
 						launched.push(running);
 						runtime.wireSubagentSteerBack(
@@ -445,6 +447,7 @@ export function registerSubagentCoreTools(
 					}
 				} catch (error) {
 					releaseSlots(unlaunchedSlots);
+					releasePilotAttempts(routing.slice(launched.length), pilotAttempts);
 					throw error;
 				}
 				runtime.startWidgetRefresh();
@@ -452,7 +455,8 @@ export function registerSubagentCoreTools(
 				const warningPrefix = warnings.filter(Boolean).join("\n\n");
 				if (launched.length === 1) {
 					const result = await runtime.getLaunchedSubagentResult(launched[0], getToolWaitSignal(launched[0], signal));
-					return withToolWarning(result, warningPrefix);
+					const details = { ...(result.details as Record<string, unknown>), routing: routing[0].evidence };
+					return withToolWarning(asSubagentToolResult({ ...result, details }), warningPrefix);
 				}
 
 				const results = await Promise.all(
@@ -478,6 +482,7 @@ export function registerSubagentCoreTools(
 							title: prepared[index]?.child.title,
 							agent: prepared[index]?.child.agent,
 							name: (result.details as { name?: string } | undefined)?.name ?? prepared[index]?.child.name,
+							routing: routing[index]?.evidence,
 						})),
 					},
 					...getSubagentBatchStopMetadata(),

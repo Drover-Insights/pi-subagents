@@ -160,11 +160,11 @@ export function resolveAvailableModelRef(
 export async function buildChildLaunchPlan(options: ChildLaunchPlanOptions): Promise<ChildLaunchPlan> {
 	const { params, agentDefs, parentCwd, parentSessionDir } = options;
 	const hasAllowedModels = !!agentDefs?.allowedModels?.trim();
-	const policyRoute = params.policyRoute;
-	const policyModels = policyRoute ? options.modelRegistry?.getAvailable() : undefined;
-	if (policyRoute && !policyModels?.length) {
+	const policyLaunch = params.policyLaunch;
+	const policyModels = policyLaunch ? options.modelRegistry?.getAvailable() : undefined;
+	if (policyLaunch && !policyModels?.length) {
 		throw new Error(
-			`The policy-selected model '${policyRoute.model}' cannot be validated without available models.`,
+			`The policy-selected model '${policyLaunch.model}' cannot be validated without available models.`,
 		);
 	}
 	const modelRegistry = policyModels
@@ -199,22 +199,22 @@ export async function buildChildLaunchPlan(options: ChildLaunchPlanOptions): Pro
 	};
 
 	const requestedModel =
-		policyRoute?.model ??
+		policyLaunch?.model ??
 		params.model ??
 		agentDefs?.model ??
 		options.parentModelRef;
 	const { effectiveModel, effectiveThinking, effectiveModelRef } = resolveRef(
 		requestedModel,
-		policyRoute?.thinking ??
+		policyLaunch?.thinking ??
 			params.thinking ??
 			agentDefs?.thinking ??
 			options.parentThinking,
 		{
-			resolveAlways: policyRoute != null || params.model != null,
-			explicitThinking: policyRoute != null || params.thinking != null,
+			resolveAlways: policyLaunch != null || params.model != null,
+			explicitThinking: policyLaunch != null || params.thinking != null,
 		},
 	);
-	if (hasAllowedModels && !policyRoute) {
+	if (hasAllowedModels && !policyLaunch) {
 		const defaultModelRef = resolveRef(
 			agentDefs?.model ?? options.parentModelRef,
 			agentDefs?.thinking ?? options.parentThinking,
