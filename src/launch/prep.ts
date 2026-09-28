@@ -108,12 +108,43 @@ function resolvePreparedSpawnPolicy(params: SubagentParamsInput, agentDefs: Agen
 	});
 }
 
+/**
+ * A policy-managed child loads only the resources its policy launch names, in
+ * place of ambient discovery. The definition is re-read here, after
+ * authorization, so a field the policy forbids fails the launch instead of
+ * being dropped.
+ */
+function applyPolicyLaunch(params: SubagentParamsInput, agentDefs: AgentDefaults | null): AgentDefaults | null {
+	const policyLaunch = params.policyLaunch;
+	if (!policyLaunch) return agentDefs;
+	if (!agentDefs) throw new Error(`Policy-managed agent ${params.agent} has no readable definition.`);
+	const spawning = agentDefs.spawning;
+	const forbidden = [
+		agentDefs.flags?.trim() ? "flags" : "",
+		agentDefs.env?.trim() ? "env" : "",
+		agentDefs.cwd?.trim() ? "cwd" : "",
+		spawning === true || (Array.isArray(spawning) && spawning.length > 0) ? "spawning" : "",
+		agentDefs.taskExpansion === "shell" ? "task expansion" : "",
+		agentDefs.llmAsVerifier === true ? "verifier fan-out" : "",
+	].filter(Boolean);
+	if (forbidden.length > 0) {
+		throw new Error(`Policy-managed agent ${params.agent} must not set ${forbidden.join(", ")}.`);
+	}
+	return {
+		...agentDefs,
+		extensions: policyLaunch.extensions.length > 0 ? policyLaunch.extensions.join(",") : "none",
+		skills: policyLaunch.skills,
+		injectSkills: undefined,
+		noContextFiles: policyLaunch.noContextFiles,
+	};
+}
+
 export async function prepareSubagentLaunch(
 	params: SubagentParamsInput,
 	ctx: SubagentLaunchContext,
 	mode: ResumeMode = "background",
 ): Promise<PreparedSubagentLaunch> {
-	const agentDefs = params.agent ? loadAgentDefaults(params.agent, params.cwd, ctx.cwd) : null;
+	const agentDefs = applyPolicyLaunch(params, params.agent ? loadAgentDefaults(params.agent, params.cwd, ctx.cwd) : null);
 	const spawnPolicy = resolvePreparedSpawnPolicy(params, agentDefs);
 	// Preserve the original agent-level auto-exit before any headless-mode override
 	// so that persisted metadata always reflects the agent file, not the runtime override.

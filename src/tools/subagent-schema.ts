@@ -8,13 +8,13 @@ const SUBAGENT_TITLE_DESCRIPTION =
 
 const SUBAGENT_MODEL_DESCRIPTION =
 	"Model routing/cost control only. Omit unless the user named a concrete model for this launch. " +
-	"For routing-enabled pilot agents, always omit this field because policy selects the model. " +
+	"For policy-managed agents, always omit this field because the routing policy selects the model. " +
 	"Do not infer a model from quality, depth, urgency, safety, or cost language. " +
 	"Never invent or upgrade models. Format model as provider/model; put the thinking level in `thinking`.";
 
 const SUBAGENT_THINKING_DESCRIPTION =
 	"Child runtime thinking level only. Omit unless the user named a concrete thinking level for this launch. " +
-	"For routing-enabled pilot agents, always omit this field because policy selects the thinking level. " +
+	"For policy-managed agents, always omit this field because the routing policy selects the thinking level. " +
 	"Do not infer thinking from quality, depth, urgency, safety, or cost language. " +
 	"Use a thinking level supported by the selected model and the installed Pi version.";
 
@@ -22,19 +22,12 @@ const subagentRoutingProperties = {
 	capabilityClass: Type.Optional(
 		Type.String({
 			description:
-				"Required for routing-enabled pilot agents. Role mappings: pilot-scout: scout.literal or scout.code-graph; pilot-worker: worker.implementation; pilot-reviewer: reviewer.normal; pilot-frontier-critic: frontier.architecture; pilot-frontier-engineer: frontier.engineering. pilot-controller cannot be launched as a child.",
+				"Required for policy-managed agents: the canonical capability class the role grants (for example literal or code-graph for Scout, implementation for Worker, review for Reviewer).",
 		}),
 	),
-	escalationReason: Type.Optional(
+	pilotCase: Type.Optional(
 		Type.String({
-			description:
-				"Use scout.code-graph: control_flow_required; frontier.architecture: architecture_invariant_risk; frontier.engineering: difficult_code_grounded_debugging. Omit for scout.literal, worker.implementation, and reviewer.normal.",
-		}),
-	),
-	risk: Type.Optional(
-		Type.String({
-			description:
-				"Required risk for routing-enabled pilot agents: low, medium, high, or critical.",
+			description: "Required for pilot-state roles: the approved pilot case ID from the routing policy.",
 		}),
 	),
 };

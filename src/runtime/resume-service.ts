@@ -2,7 +2,9 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadAgentDefaults as loadAgentDefaultsFromDefinitions } from "../agents/definitions.ts";
+import { getAgentConfigDir, loadAgentDefaults as loadAgentDefaultsFromDefinitions } from "../agents/definitions.ts";
+import { loadCanonicalPolicy } from "../routing/canonical-policy.ts";
+import { checkResumeRequest } from "../routing/launch-authorization.ts";
 import { assertModelAllowed, buildModelRef, splitModelRef } from "../agents/model-refs.ts";
 import { getArtifactStorageRoot } from "../artifact-storage.ts";
 import { buildAppendSystemInheritancePlan } from "../launch/append-system.ts";
@@ -276,6 +278,8 @@ async function resumeSubagentSessionWithoutWidth(
 			: invocationMetadata;
 	const shouldPersistInvocationMetadata = invocationMetadata && invocationMetadata !== invocationMetadataSource;
 	const targetAgent = launchMetadata?.agent ?? metadata.agent ?? input.agent;
+	const resumeBlocked = checkResumeRequest(loadCanonicalPolicy(getAgentConfigDir()), targetAgent);
+	if (resumeBlocked) throw new Error(`Routing policy blocked the request: ${resumeBlocked}.`);
 	const targetCwd = launchMetadata?.cwd ?? invocationMetadataSource?.cwd ?? process.cwd();
 	const targetDefs = targetAgent
 		? loadAgentDefaultsFromDefinitions(targetAgent, undefined, targetCwd, resolveSubagentCwd)

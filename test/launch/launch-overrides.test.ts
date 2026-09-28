@@ -28,7 +28,7 @@ async function readEventually(path: string): Promise<string> {
 	for (let attempt = 0; attempt < 50; attempt++) {
 		if (existsSync(path)) {
 			lastText = readFileSync(path, "utf8");
-			if (lastText.trim()) return lastText;
+			if (lastText.includes("ARGV=")) return lastText;
 		}
 		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
@@ -74,11 +74,11 @@ describe("internal launch overrides (forcedCwd/launchEnv)", () => {
 			agent: "worker",
 			forcedCwd: "/tmp/worktree",
 			launchEnv: { COMPOSE_PROJECT_NAME: "bo-run-w0" },
-			policyRoute: { model: "provider/policy-model", thinking: "low" },
+			policyLaunch: { model: "provider/policy-model", thinking: "low", extensions: [], skills: "none", noContextFiles: true },
 		});
 		assert.equal(stripped.forcedCwd, undefined);
 		assert.equal(stripped.launchEnv, undefined);
-		assert.equal(stripped.policyRoute, undefined);
+		assert.equal(stripped.policyLaunch, undefined);
 		assert.equal(stripped.agent, "worker");
 		assert.equal(stripped.name, "cand");
 	});
@@ -97,9 +97,9 @@ describe("internal launch overrides (forcedCwd/launchEnv)", () => {
 				`launchEnv leaked onto ${JSON.stringify(properties)}`,
 			);
 			assert.equal(
-				properties.includes("policyRoute"),
+				properties.includes("policyLaunch"),
 				false,
-				`policyRoute leaked onto ${JSON.stringify(properties)}`,
+				`policyLaunch leaked onto ${JSON.stringify(properties)}`,
 			);
 			assert.equal(
 				properties.includes("cwd"),

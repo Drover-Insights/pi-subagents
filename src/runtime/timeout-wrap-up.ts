@@ -1,4 +1,7 @@
 import { spawn } from "node:child_process";
+import { getAgentConfigDir } from "../agents/definitions.ts";
+import { loadCanonicalPolicy } from "../routing/canonical-policy.ts";
+import { checkManagedChildRequest } from "../routing/launch-authorization.ts";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getArtifactStorageRoot } from "../artifact-storage.ts";
@@ -154,6 +157,11 @@ export async function restartSubagentForTimeoutWrapUp(
 	signal?: AbortSignal,
 ): Promise<void> {
 	const launch = await getWrapUpLaunchParts(running, signal);
+	// Gate after the continuation is planned and before any spawn, surface, or sidecar work.
+	if (running.routing) {
+		const blocked = checkManagedChildRequest(loadCanonicalPolicy(getAgentConfigDir()), running.routing);
+		if (blocked) throw new Error(`Routing policy blocked the request: ${blocked}.`);
+	}
 	throwIfAborted(signal);
 	clearSubagentExitSidecar(running.sessionFile);
 	running.autoExit = true;
