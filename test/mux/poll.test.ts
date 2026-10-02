@@ -14,6 +14,13 @@ describe("interpretExitSidecar", () => {
 		});
 	});
 
+	it("carries the final report of a normal completion and nothing else", () => {
+		assert.equal(interpretExitSidecar({ type: "done", finalReport: "REPORT" }).finalReport, "REPORT");
+		assert.equal("finalReport" in interpretExitSidecar({ type: "done", finalReport: 42 }), false);
+		assert.equal("finalReport" in interpretExitSidecar({ type: "error", errorMessage: "x", finalReport: "R" }), false);
+		assert.equal("finalReport" in interpretExitSidecar({ type: "ping", message: "help", finalReport: "R" }), false);
+	});
+
 	it("does not invent a completion reason", () => {
 		const decoded = interpretExitSidecar({ type: "done", outputTokens: 4 });
 		assert.equal("completionReason" in decoded, false);

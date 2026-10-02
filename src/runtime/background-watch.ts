@@ -354,24 +354,23 @@ function watchBackgroundGeneration(
 			const stdout = running.stdoutTail?.trim();
 			let summary = `Background agent exited with code ${exitCode}`;
 			let summarySource: SubagentSummarySource = "runtime";
-			if ((!running.noSession || running.timeoutWarnThreshold !== undefined) && existsSync(running.sessionFile)) {
-				const allEntries = getNewEntries(running.sessionFile, running.launchEntryCount ?? 0);
-				const output = findLastSubagentOutputWithSource(allEntries);
-				if (output) {
-					({ summary, summarySource } = output);
-				} else if (exitCode !== 0 && stderr) {
-					summary = `Background agent exited with code ${exitCode}\n\n${stderr}`;
-				} else if (exitCode === 0 && stdout) {
-					summary = stdout;
-					summarySource = "subagent";
-				} else if (exitCode === 0) {
-					summary = "Background agent exited without output";
-				}
-			} else if (stdout) {
-				summary = stdout;
+			// An in-memory (`no-session`) child has no transcript; every child also
+			// records its final report with its completion signal.
+			const transcriptOutput =
+				(!running.noSession || running.timeoutWarnThreshold !== undefined) && existsSync(running.sessionFile)
+					? findLastSubagentOutputWithSource(getNewEntries(running.sessionFile, running.launchEntryCount ?? 0))
+					: null;
+			if (transcriptOutput) {
+				({ summary, summarySource } = transcriptOutput);
+			} else if (exitSignal?.finalReport) {
+				summary = exitSignal.finalReport;
 				summarySource = "subagent";
 			} else if (exitCode !== 0 && stderr) {
 				summary = `Background agent exited with code ${exitCode}\n\n${stderr}`;
+			} else if (stdout) {
+				summary = formatStdoutTailDiagnostic(stdout);
+			} else if (exitCode === 0) {
+				summary = "Background agent exited without output";
 			}
 			if (timedOut) {
 				if (!running.noSession) {
@@ -453,6 +452,18 @@ function watchBackgroundGeneration(
 		child.once("error", onError);
 		armDeadlineTimer();
 	});
+}
+
+/**
+ * Stdout keeps only a bounded tail, so it can never stand in for the child's
+ * final report: label it as a possibly truncated diagnostic instead.
+ */
+function formatStdoutTailDiagnostic(stdout: string): string {
+	return (
+		"Background agent produced no final report. " +
+		"The last process output follows; it may be truncated and is not a complete report:\n\n" +
+		stdout
+	);
 }
 
 function buildBackgroundCancellationResult(running: RunningSubagent): SubagentResult {
