@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { consumeSubagentExitSignal } from "../../src/mux/poll.ts";
@@ -91,5 +91,32 @@ describe("subagent exit sidecars", () => {
 		assert.equal(consumeSubagentExitSignal(sessionFile), null);
 		writeFileSync(exitFile, JSON.stringify({ type: "done", outputTokens: 3 }));
 		assert.equal(readFileSync(exitFile, "utf8"), JSON.stringify({ type: "done", outputTokens: 3 }));
+	});
+
+	it("keeps a report-bearing sidecar private even when it supersedes an existing file", () => {
+		const dir = createTestDir();
+		const sessionFile = join(dir, "child.jsonl");
+		const exitFile = getSubagentExitSidecarPath(sessionFile);
+		writeFileSync(exitFile, JSON.stringify({ type: "error", errorMessage: "transient" }));
+		chmodSync(exitFile, 0o644);
+
+		assert.equal(writeSubagentExitSidecar(sessionFile, { type: "done", finalReport: "REPORT" }, { supersede: true }), true);
+
+		assert.equal(statSync(exitFile).mode & 0o777, 0o600);
+		assert.equal(JSON.parse(readFileSync(exitFile, "utf8")).finalReport, "REPORT");
+	});
+
+	it("never writes the report through a planted symlink", () => {
+		const dir = createTestDir();
+		const sessionFile = join(dir, "child.jsonl");
+		const exitFile = getSubagentExitSidecarPath(sessionFile);
+		const target = join(dir, "elsewhere.json");
+		writeFileSync(target, JSON.stringify({ type: "error" }));
+		symlinkSync(target, exitFile);
+
+		assert.equal(writeSubagentExitSidecar(sessionFile, { type: "done", finalReport: "REPORT" }, { supersede: true }), true);
+
+		assert.equal(readFileSync(target, "utf8"), JSON.stringify({ type: "error" }), "the symlink target is untouched");
+		assert.equal(JSON.parse(readFileSync(exitFile, "utf8")).finalReport, "REPORT");
 	});
 });

@@ -1,4 +1,5 @@
 import { existsSync, rmSync } from "node:fs";
+import { clearSubagentExitSidecar } from "../session/exit-sidecar.ts";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -346,7 +347,12 @@ export async function getPersistedSessionParityArgs(
 }
 
 export function cleanupNoSessionSessionFile(running: Pick<RunningSubagent, "noSession" | "sessionFile">): void {
-	if (!running.noSession || !existsSync(running.sessionFile)) return;
+	if (!running.noSession) return;
+	// An exit sidecar the parent could not consume can still hold the report.
+	try {
+		clearSubagentExitSidecar(running.sessionFile);
+	} catch {}
+	if (!existsSync(running.sessionFile)) return;
 	try {
 		rmSync(running.sessionFile, { force: true });
 	} catch {}

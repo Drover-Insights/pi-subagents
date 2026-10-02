@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 
 export function getSubagentExitSidecarPath(sessionFile: string): string {
 	return `${sessionFile}.exit`;
@@ -40,6 +41,16 @@ export function writeSubagentExitSidecar(
 			// Let a genuine completion replace it.
 		}
 	}
-	writeFileSync(exitFile, JSON.stringify(payload), "utf8");
+	// The payload can carry the child's final report. Write a fresh private file
+	// and rename it into place, so the reader never sees a torn write and an
+	// existing file or planted symlink never decides where the report goes.
+	const tempFile = `${exitFile}.${randomBytes(6).toString("hex")}.tmp`;
+	try {
+		writeFileSync(tempFile, JSON.stringify(payload), { encoding: "utf8", mode: 0o600, flag: "wx" });
+		renameSync(tempFile, exitFile);
+	} catch (error) {
+		rmSync(tempFile, { force: true });
+		throw error;
+	}
 	return true;
 }

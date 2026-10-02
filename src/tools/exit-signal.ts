@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { writeSubagentExitSidecar } from "../session/exit-sidecar.ts";
+import { findLastSubagentOutputWithSource, type SessionEntry } from "../session/session.ts";
 import {
 	SUBAGENT_COMPLETION_ENTRY,
 	SUBAGENT_CONTEXT_PRESSURE_FAILURE_REASON,
@@ -8,7 +9,7 @@ import {
 import type { FinalContextSnapshot } from "./final-context-snapshot.ts";
 
 export interface ExitSignalWriterDeps {
-	pi: Pick<ExtensionAPI, "appendEntry">;
+	pi: Pick<ExtensionAPI, "appendEntry"> & Partial<Pick<ExtensionAPI, "on">>;
 	getFinalContextUsage(): FinalContextSnapshot | undefined;
 	hasDeliveredFinalWarning(): boolean;
 }
@@ -52,15 +53,54 @@ function classifyExitPayload(
 	};
 }
 
+/**
+ * The child's final report, chosen by the same rules the parent applies to a
+ * transcript. An in-memory (`no-session`) child has no transcript, so this is
+ * the only complete copy of its report the parent can read. A malformed
+ * message must never block the completion signal: without a report the
+ * parent reports the run as incomplete instead.
+ */
+function findFinalReport(messages: unknown): string | undefined {
+	if (!Array.isArray(messages)) return undefined;
+	try {
+		const entries = messages.map((message, index) => ({ type: "message", id: String(index), message }));
+		const output = findLastSubagentOutputWithSource(entries as SessionEntry[]);
+		return output?.summarySource === "subagent" ? output.summary : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 export function createExitSignalWriter(deps: ExitSignalWriterDeps) {
+	// The messages of the current run, forgotten when a new run starts so an
+	// earlier run's report never rides on a later completion. Each finished
+	// message is kept as it ends, so a completion written mid-run (the
+	// `subagent_done` tool) sees the report written before it. Registered before
+	// the completion handlers, so it is current when they run.
+	let runMessages: unknown[] = [];
+	deps.pi.on?.("agent_start", () => {
+		runMessages = [];
+	});
+	deps.pi.on?.("message_end", (event) => {
+		runMessages.push(event.message);
+	});
+	deps.pi.on?.("agent_end", (event) => {
+		runMessages = Array.isArray(event.messages) ? [...event.messages] : [];
+	});
+
 	return function writeExitSignal(payload: object, opts?: { supersede?: boolean; autonomous?: boolean }) {
 		const sessionFile = process.env.PI_SUBAGENT_SESSION;
 		if (!sessionFile) return "no-session" as const;
 		const { isNormalCompletion, contextPressure, failedWhileSpent } = classifyExitPayload(deps, payload, opts);
+		// Only a completion the child decided carries its report. A lifecycle
+		// shutdown can end a run mid-turn, and its last text is not a report.
+		const finalReport =
+			isNormalCompletion && opts?.autonomous !== false ? findFinalReport(runMessages) : undefined;
 		const accepted = writeSubagentExitSidecar(
 			sessionFile,
 			{
 				...payload,
+				...(finalReport !== undefined ? { finalReport } : {}),
 				...deps.getFinalContextUsage(),
 				...(contextPressure ? { completionReason: SUBAGENT_CONTEXT_PRESSURE_REASON } : {}),
 				...(failedWhileSpent ? { completionReason: SUBAGENT_CONTEXT_PRESSURE_FAILURE_REASON } : {}),
