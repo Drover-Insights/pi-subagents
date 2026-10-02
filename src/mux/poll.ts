@@ -12,6 +12,8 @@ export interface PollResult {
 	completionReason?: "context-pressure" | "context-pressure-failure";
 	ping?: { name: string; message: string };
 	errorMessage?: string;
+	/** The child's complete final report, recorded with a normal completion. */
+	finalReport?: string;
 }
 
 /**
@@ -77,7 +79,11 @@ function interpretExitSidecar(data: any): PollResult {
 				: "Subagent exited with stopReason=error (no errorMessage in sidecar).";
 		return withUsage({ reason: "error" as const, exitCode: 1, errorMessage });
 	}
-	return withUsage({ reason: "done" as const, exitCode: 0 });
+	return withUsage({
+		reason: "done" as const,
+		exitCode: 0,
+		...(typeof data?.finalReport === "string" ? { finalReport: data.finalReport } : {}),
+	});
 }
 
 export const __pollForExitTest__ = { interpretExitSidecar };

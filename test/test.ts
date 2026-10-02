@@ -4,6 +4,7 @@ import "./session/child-session-storage.test.ts";
 import "./session/exit-sidecar.test.ts";
 
 import "./tools/subagent-done.test.ts";
+import "./tools/subagent-done-final-report.test.ts";
 import "./tools/caller-ping.test.ts";
 import "./tools/skill-visibility.test.ts";
 import "./vf/verifier-profile.test.ts";
