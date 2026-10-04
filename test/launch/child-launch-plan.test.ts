@@ -1,5 +1,15 @@
 import { buildChildLaunchPlan } from "../../src/launch/child-launch-plan.ts";
-import { assert, beforeEach, createTestDir, describe, it, join, mkdirSync, writeFileSync } from "../support/index.ts";
+import {
+	assert,
+	beforeEach,
+	createGitCheckout,
+	createTestDir,
+	describe,
+	it,
+	join,
+	mkdirSync,
+	writeFileSync,
+} from "../support/index.ts";
 
 /**
  * The child launch plan is the foundation seam for agent definition and launch
@@ -110,18 +120,10 @@ describe("child launch plan", () => {
 		const cwd = createTestDir();
 		const agentDir = join(cwd, "agent-root");
 		const packageRoot = join(agentDir, "git", "github.com", "example", "footer-extension");
-		mkdirSync(packageRoot, { recursive: true });
+		createGitCheckout(packageRoot);
 		writeFileSync(
 			join(agentDir, "settings.json"),
 			JSON.stringify({ packages: ["git:github.com/example/footer-extension"] }),
-		);
-		writeFileSync(
-			join(packageRoot, "package.json"),
-			JSON.stringify({
-				name: "footer-extension",
-				version: "1.0.0",
-				pi: { extensions: ["src/index.ts"] },
-			}),
 		);
 
 		const plan = await buildChildLaunchPlan({
@@ -179,13 +181,11 @@ describe("child launch plan", () => {
 		const cwd = createTestDir();
 		const parentAgentDir = join(cwd, "parent-root");
 		const childAgentDir = join(cwd, "child-root");
-		const source = "git:github.com/example/footer-extension@0123456789abcdef0123456789abcdef01234567";
 		const packageRoot = join(parentAgentDir, "git", "github.com", "example", "footer-extension");
-		mkdirSync(packageRoot, { recursive: true });
+		const source = `git:github.com/example/footer-extension@${createGitCheckout(packageRoot)}`;
 		mkdirSync(childAgentDir, { recursive: true });
 		writeFileSync(join(parentAgentDir, "settings.json"), JSON.stringify({ packages: [source] }));
 		writeFileSync(join(childAgentDir, "settings.json"), JSON.stringify({ retry: { enabled: false } }));
-		writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ name: "footer-extension", version: "1.0.0" }));
 		process.env.PI_CODING_AGENT_DIR = parentAgentDir;
 
 		const plan = await buildChildLaunchPlan({
@@ -211,12 +211,10 @@ describe("child launch plan", () => {
 		const cwd = createTestDir();
 		const parentAgentDir = join(cwd, "parent-root");
 		const childAgentDir = join(cwd, "child-root");
-		const source = "git:github.com/example/footer-extension@0123456789abcdef0123456789abcdef01234567";
+		const source = "git:github.com/example/footer-extension@v1";
 		for (const agentDir of [parentAgentDir, childAgentDir]) {
-			const packageRoot = join(agentDir, "git", "github.com", "example", "footer-extension");
-			mkdirSync(packageRoot, { recursive: true });
+			createGitCheckout(join(agentDir, "git", "github.com", "example", "footer-extension"));
 			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [source] }));
-			writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ name: "footer-extension", version: "1.0.0" }));
 		}
 		process.env.PI_CODING_AGENT_DIR = parentAgentDir;
 

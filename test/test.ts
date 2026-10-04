@@ -33,6 +33,7 @@ import "./artifacts/storage.test.ts";
 import "./launch/append-system-inheritance.test.ts";
 import "./launch/autoexit-persistence.test.ts";
 import "./launch/child-launch-plan.test.ts";
+import "./launch/configured-package-reuse.test.ts";
 import "./launch/child-env.test.ts";
 import "./launch/env-capsule.test.ts";
 import "./launch/run-child.test.ts";
