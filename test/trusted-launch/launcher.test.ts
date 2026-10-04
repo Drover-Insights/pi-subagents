@@ -81,14 +81,17 @@ function harness(
 		muxUnavailableResult: () => ({ content: [], details: {} }),
 		...(options.pilotAttempts ? { pilotAttempts: options.pilotAttempts } : {}),
 	};
-	const publication = publishTrustedSubagents(
-		createTrustedLauncher({
+	const publication = publishTrustedSubagents({
+		launch: createTrustedLauncher({
 			pi: { getThinkingLevel: () => "medium" } as never,
 			runtime,
 			ctx: { hasUI: options.hasUI ?? false, cwd: createTestDir(), sessionManager: {} } as never,
 			forceSynchronous: () => options.forceSynchronous ?? false,
 		}),
-	);
+		resume: async () => {
+			throw new Error("resume is not under test");
+		},
+	});
 	publications.push(publication);
 	return { publication, descriptor: publication.descriptor, launched, wired, stopped, widgetRefreshes: () => widgetRefreshes };
 }

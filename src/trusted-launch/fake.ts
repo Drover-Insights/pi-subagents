@@ -1,4 +1,12 @@
-import type { TrustedLaunchMode, TrustedLaunchRequestV1, TrustedLaunchResultV1, TrustedSubagentsDescriptor } from "./contract.ts";
+import {
+	TRUSTED_LAUNCH_VERSION,
+	type TrustedLaunchMode,
+	type TrustedLaunchRequestV1,
+	type TrustedLaunchResultV1,
+	type TrustedResumeRequestV1,
+	type TrustedSubagentsDescriptor,
+} from "./contract.ts";
+import { getEffectiveCwdError } from "./effective-cwd.ts";
 import { publishTrustedSubagents } from "./registry.ts";
 
 export interface FakeTrustedSubagentsOptions {
@@ -15,6 +23,8 @@ export interface FakeTrustedSubagents {
 	readonly descriptor: TrustedSubagentsDescriptor;
 	/** Every request that passed validation, in order. */
 	readonly requests: readonly TrustedLaunchRequestV1[];
+	/** Every resume request that passed validation, in order. */
+	readonly resumeRequests: readonly TrustedResumeRequestV1[];
 	dispose(): void;
 }
 
@@ -25,29 +35,77 @@ export interface FakeTrustedSubagents {
  */
 export function createFakeTrustedSubagents(options: FakeTrustedSubagentsOptions): FakeTrustedSubagents {
 	const requests: TrustedLaunchRequestV1[] = [];
-	const publication = publishTrustedSubagents(async (request) => {
-		const mode = Object.hasOwn(options.agents, request.agent) ? options.agents[request.agent] : undefined;
-		if (!mode) return { outcome: "not_started", reason: "agent_not_found", message: `Unknown agent "${request.agent}".` };
-		if (mode !== request.mode) {
+	const resumeRequests: TrustedResumeRequestV1[] = [];
+	const launchedSessions = new Map<string, { request: TrustedLaunchRequestV1; result: TrustedLaunchResultV1 & { outcome: "launched" } }>();
+	let generation = "";
+	const publication = publishTrustedSubagents({
+		async launch(request) {
+			const mode = Object.hasOwn(options.agents, request.agent) ? options.agents[request.agent] : undefined;
+			if (!mode) return { outcome: "not_started", reason: "agent_not_found", message: `Unknown agent "${request.agent}".` };
+			if (mode !== request.mode) {
+				return {
+					outcome: "not_started",
+					reason: "mode_mismatch",
+					message: `Agent "${request.agent}" launches ${mode} here, not ${request.mode}.`,
+				};
+			}
+			requests.push(request);
+			const index = requests.length - 1;
+			const runId = `fake-run-${index + 1}`;
+			const result: TrustedLaunchResultV1 = options.respond
+				? options.respond(request, index)
+				: {
+						outcome: "launched",
+						requestId: request.requestId,
+						runId,
+						sessionFile: `/fake-pi-subagents/sessions/${runId}.jsonl`,
+						mode,
+						...(mode === "interactive" ? { surfaceId: `fake-surface-${index + 1}` } : {}),
+						effectiveCwd: request.effectiveCwd,
+					};
+			if (result.outcome === "launched") launchedSessions.set(result.sessionFile, { request, result });
+			return result;
+		},
+		async resume(request) {
+			// A session this fake launched resumes when the request names its launch
+			// and directory; anything else is refused as the real descriptor refuses it.
+			resumeRequests.push(request);
+			const index = resumeRequests.length - 1;
+			const launched = launchedSessions.get(request.sessionFile);
+			if (!launched) {
+				return { outcome: "not_started", reason: "session_not_found", message: "This fake launched no such session." };
+			}
+			if (launched.request.requestId !== request.launchRequestId) {
+				return { outcome: "not_started", reason: "launch_request_mismatch", message: "The session was launched by another request." };
+			}
+			const cwdError = getEffectiveCwdError(launched.result.effectiveCwd);
+			if (cwdError) return { outcome: "not_started", reason: cwdError, message: "The session's directory is no longer usable." };
+			if (launched.result.effectiveCwd !== request.effectiveCwd) {
+				return { outcome: "not_started", reason: "effective_cwd_mismatch", message: "The session runs in another directory." };
+			}
+			const { result } = launched;
 			return {
-				outcome: "not_started",
-				reason: "mode_mismatch",
-				message: `Agent "${request.agent}" launches ${mode} here, not ${request.mode}.`,
+				outcome: "resumed",
+				requestId: request.requestId,
+				runId: `fake-resume-${index + 1}`,
+				sessionFile: result.sessionFile,
+				mode: result.mode,
+				...(result.mode === "interactive" ? { surfaceId: `fake-resume-surface-${index + 1}` } : {}),
+				effectiveCwd: result.effectiveCwd,
+				launch: {
+					version: TRUSTED_LAUNCH_VERSION,
+					generation,
+					requestId: launched.request.requestId,
+					...(launched.request.labels ? { labels: launched.request.labels } : {}),
+				},
 			};
-		}
-		requests.push(request);
-		const index = requests.length - 1;
-		if (options.respond) return options.respond(request, index);
-		const runId = `fake-run-${index + 1}`;
-		return {
-			outcome: "launched",
-			requestId: request.requestId,
-			runId,
-			sessionFile: `/fake-pi-subagents/sessions/${runId}.jsonl`,
-			mode,
-			...(mode === "interactive" ? { surfaceId: `fake-surface-${index + 1}` } : {}),
-			effectiveCwd: request.effectiveCwd,
-		};
+		},
 	});
-	return { descriptor: publication.descriptor, requests, dispose: () => publication.dispose() };
+	generation = publication.descriptor.generation;
+	return {
+		descriptor: publication.descriptor,
+		requests,
+		resumeRequests,
+		dispose: () => publication.dispose(),
+	};
 }

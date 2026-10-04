@@ -1,7 +1,7 @@
 import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { publishTrustedSubagents } from "../../src/trusted-launch/registry.ts";
+import { publishTrustedSubagents, type TrustedLauncher } from "../../src/trusted-launch/registry.ts";
 import {
 	resolveTrustedSubagents,
 	TRUSTED_LAUNCH_REGISTRY_KEY,
@@ -45,8 +45,12 @@ const publications: { dispose(): void }[] = [];
 function clearRegistrySlot() {
 	delete (globalThis as Record<symbol, unknown>)[TRUSTED_LAUNCH_REGISTRY_KEY];
 }
-function publish(launcher: Parameters<typeof publishTrustedSubagents>[0]) {
-	const publication = publishTrustedSubagents(launcher);
+/** Resume has its own suite; these tests exercise launch. */
+async function unusedResume(): Promise<never> {
+	throw new Error("resume is not under test");
+}
+function publish(launcher: TrustedLauncher) {
+	const publication = publishTrustedSubagents({ launch: launcher, resume: unusedResume });
 	publications.push(publication);
 	return publication;
 }
@@ -89,7 +93,10 @@ describe("trusted launch registry", () => {
 
 	it("refuses a duplicate live publication", () => {
 		publish(recordingLauncher().launcher);
-		assert.throws(() => publishTrustedSubagents(recordingLauncher().launcher), /already published/);
+		assert.throws(
+			() => publishTrustedSubagents({ launch: recordingLauncher().launcher, resume: unusedResume }),
+			/already published/,
+		);
 	});
 
 	it("a disposed descriptor cannot launch and is no longer resolvable", async () => {
@@ -150,6 +157,9 @@ describe("trusted launch registry", () => {
 		const file = join(symlinkParent, "file.txt");
 		writeFileSync(file, "x");
 		const canonical = realpathSync(target);
+		// Readable but not searchable: the child could not enter it.
+		const unsearchable = join(realpathSync(symlinkParent), "unsearchable");
+		mkdirSync(unsearchable, { mode: 0o600 });
 
 		const cases: [string, unknown, string][] = [
 			["a non-object request", "launch please", "invalid_request"],
@@ -166,6 +176,13 @@ describe("trusted launch registry", () => {
 			["a non-canonical effective cwd", validRequest({ effectiveCwd: `${canonical}/../target` }), "effective_cwd_invalid"],
 			["a trailing-slash effective cwd", validRequest({ effectiveCwd: `${canonical}/` }), "effective_cwd_invalid"],
 			["a file effective cwd", validRequest({ effectiveCwd: realpathSync(file) }), "effective_cwd_invalid"],
+			...(process.getuid?.() === 0
+				? []
+				: ([["an inaccessible effective cwd", validRequest({ effectiveCwd: unsearchable }), "effective_cwd_invalid"]] as [
+						string,
+						unknown,
+						string,
+					][])),
 			["a non-string label", validRequest({ labels: { runId: 7 } }), "invalid_request"],
 			["a malformed label key", validRequest({ labels: { "Run Id": "x" } }), "invalid_request"],
 			["too many labels", validRequest({ labels: Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`k${i}`, "v"])) }), "invalid_request"],

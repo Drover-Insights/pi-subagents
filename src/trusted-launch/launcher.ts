@@ -99,12 +99,12 @@ export function createTrustedLauncher(deps: TrustedLauncherDeps): TrustedLaunche
 }
 
 /** Request a stop for a child the caller cannot account for; its outcome stays unknown. */
-async function stopUnaccountedChild(
-	runtime: SubagentToolRuntime,
+export async function stopUnaccountedChild(
+	runtime: Pick<SubagentToolRuntime, "stopRunningSubagent">,
 	running: RunningSubagent,
 	reason: string,
 	message: string,
-): Promise<TrustedLaunchResultV1> {
+): Promise<Extract<TrustedLaunchResultV1, { outcome: "unknown" }>> {
 	// A resolved stop is a request: closing a pane surface can fail silently.
 	let stopOutcome = "A stop was requested; its termination is not confirmed.";
 	try {

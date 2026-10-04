@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, realpathSync, symlinkSync } from "node:fs";
+import { mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { resetSpawnWidthForTest } from "../../src/runtime/spawn-width.ts";
@@ -49,14 +49,17 @@ function realDescriptor(): TrustedSubagentsDescriptor {
 		wireSubagentSteerBack() {},
 		startWidgetRefresh() {},
 	} as unknown as SubagentToolRuntime;
-	const publication = publishTrustedSubagents(
-		createTrustedLauncher({
+	const publication = publishTrustedSubagents({
+		launch: createTrustedLauncher({
 			pi: { getThinkingLevel: () => "medium" } as never,
 			runtime,
 			ctx: { hasUI: false, cwd: createTestDir(), sessionManager: {} } as never,
 			forceSynchronous: () => false,
 		}),
-	);
+		resume: async () => {
+			throw new Error("resume is not under test");
+		},
+	});
 	disposers.push(() => publication.dispose());
 	return publication.descriptor;
 }
@@ -156,6 +159,54 @@ describe("package fake scripting", () => {
 			fake.requests.map((req) => req.requestId),
 			["op_01", "op_02"],
 		);
+	});
+
+	it("resumes a session it launched only for that launch and directory", async () => {
+		const fake = createFakeTrustedSubagents({ agents: { worker: "background" } });
+		disposers.push(() => fake.dispose());
+		const req = request({ labels: { runId: "run_01" } });
+		const launched = await fake.descriptor.launch(req);
+		assert.equal(launched.outcome, "launched");
+		if (launched.outcome !== "launched") return;
+		const resume = {
+			requestVersion: TRUSTED_LAUNCH_VERSION,
+			requestId: "op_resume_01",
+			sessionFile: launched.sessionFile,
+			effectiveCwd: launched.effectiveCwd,
+			launchRequestId: "op_01",
+			task: "Continue",
+		};
+		assert.deepEqual(await fake.descriptor.resume(resume), {
+			outcome: "resumed",
+			requestId: "op_resume_01",
+			runId: "fake-resume-1",
+			sessionFile: launched.sessionFile,
+			mode: "background",
+			effectiveCwd: req.effectiveCwd,
+			launch: {
+				version: TRUSTED_LAUNCH_VERSION,
+				generation: fake.descriptor.generation,
+				requestId: "op_01",
+				labels: { runId: "run_01" },
+			},
+		});
+		const refusals = await Promise.all([
+			fake.descriptor.resume({ ...resume, launchRequestId: "op_other" }),
+			fake.descriptor.resume({ ...resume, effectiveCwd: realpathSync(createTestDir()) }),
+			fake.descriptor.resume({ ...resume, sessionFile: "/fake-pi-subagents/sessions/unknown.jsonl" }),
+			fake.descriptor.resume({ ...resume, mode: "interactive" }),
+		]);
+		assert.deepEqual(
+			refusals.map((outcome) => (outcome.outcome === "not_started" ? outcome.reason : outcome.outcome)),
+			["launch_request_mismatch", "effective_cwd_mismatch", "session_not_found", "invalid_request"],
+		);
+		assert.equal(fake.resumeRequests.length, 4);
+		rmSync(req.effectiveCwd as string, { recursive: true });
+		const moved = await fake.descriptor.resume(resume);
+		assert.equal(moved.outcome === "not_started" && moved.reason, "effective_cwd_missing");
+		fake.dispose();
+		const disposed = await fake.descriptor.resume(resume);
+		assert.equal(disposed.outcome === "not_started" && disposed.reason, "descriptor_disposed");
 	});
 
 	it("gives interactive launches a deterministic surface", async () => {

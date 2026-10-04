@@ -85,6 +85,7 @@ import {
 	type SubagentToolRuntime,
 } from "./tools/subagent-tools.ts";
 import { createTrustedLauncher } from "./trusted-launch/launcher.ts";
+import { createTrustedResumer } from "./trusted-launch/resumer.ts";
 import { publishTrustedSubagents, type TrustedSubagentsPublication } from "./trusted-launch/registry.ts";
 import { registerSubagentsView } from "./tools/subagents-view.ts";
 import { SUBAGENT_TOOL_NAME } from "./tools/tool-names.ts";
@@ -192,6 +193,22 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		stopRunningSubagent,
 		muxUnavailableResult: () => muxUnavailableResult("tab-title"),
 	};
+	const resumeRuntime = {
+		getShellReadyDelayMs,
+		isMuxAvailable,
+		watchBackgroundSubagent,
+		watchSubagent,
+		getWatcherSignal,
+		wireSubagentSteerBack,
+		startWidgetRefresh,
+		getLaunchedSubagentResult,
+		stopRunningSubagent,
+		runningSubagents,
+		getContextWindow: (modelRef: string | undefined) => widgetManager.resolveModelContextWindow(modelRef),
+		modelRegistry: {
+			getAvailable: () => latestContext?.modelRegistry.getAvailable() ?? [],
+		},
+	};
 	// The trusted launch descriptor of the current session; it launches through
 	// the same coordinator as the subagent tool, so it exists only with it.
 	let trustedLaunch: TrustedSubagentsPublication | undefined;
@@ -203,14 +220,11 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		retractTrustedLaunch();
 		if (!shouldRegister(SUBAGENT_TOOL_NAME)) return;
 		try {
-			trustedLaunch = publishTrustedSubagents(
-				createTrustedLauncher({
-					pi,
-					runtime: coreToolRuntime,
-					ctx,
-					forceSynchronous: () => shouldForceSynchronousLaunch(ctx.hasUI),
-				}),
-			);
+			const forceSynchronous = () => shouldForceSynchronousLaunch(ctx.hasUI);
+			trustedLaunch = publishTrustedSubagents({
+				launch: createTrustedLauncher({ pi, runtime: coreToolRuntime, ctx, forceSynchronous }),
+				resume: createTrustedResumer({ pi, runtime: resumeRuntime, forceSynchronous }),
+			});
 		} catch (error) {
 			// Another pi-subagents instance owns the descriptor; extensions that
 			// resolve it keep using that one, and this instance publishes none.
@@ -425,21 +439,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 
 	registerSubagentCoreTools(pi, shouldRegister, coreToolRuntime);
 
-	registerSubagentResumeTool(pi, shouldRegister, {
-		getShellReadyDelayMs,
-		isMuxAvailable,
-		watchBackgroundSubagent,
-		watchSubagent,
-		getWatcherSignal,
-		wireSubagentSteerBack,
-		startWidgetRefresh,
-		getLaunchedSubagentResult,
-		runningSubagents,
-		getContextWindow: (modelRef) => widgetManager.resolveModelContextWindow(modelRef),
-		modelRegistry: {
-			getAvailable: () => latestContext?.modelRegistry.getAvailable() ?? [],
-		},
-	});
+	registerSubagentResumeTool(pi, shouldRegister, resumeRuntime);
 
 	registerSubagentMessageRenderers(pi, formatElapsed);
 
