@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentDefaults } from "../agents/definitions.ts";
-import { loadAgentDefaults as loadAgentDefaultsFromDefinitions } from "../agents/definitions.ts";
+import { getAgentConfigDir, loadAgentDefaults as loadAgentDefaultsFromDefinitions } from "../agents/definitions.ts";
 import { getArtifactStorageRoot } from "../artifact-storage.ts";
 import {
 	buildIdentityBlock,
@@ -20,7 +20,8 @@ import {
 import { getSubagentToolLaunchArgs } from "../tools/policy.ts";
 import { SPAWNING_TOOL_NAMES } from "../tools/tool-names.ts";
 import { parseSpawnEnv, resolveSpawnPolicy, type SpawnPolicyResult } from "../spawn/policy.ts";
-import type { RunningSubagent, SubagentParamsInput } from "../types.ts";
+import { verifyPolicyLaunch } from "../routing/resource-verification.ts";
+import type { PolicyLaunch, RunningSubagent, SubagentParamsInput } from "../types.ts";
 import { buildAppendSystemInheritancePlan } from "./append-system.ts";
 import { parseCommandWords } from "./child-command.ts";
 import { buildChildLaunchPlan, type ModelRegistryLike } from "./child-launch-plan.ts";
@@ -83,14 +84,17 @@ export interface PreparedSubagentLaunch {
 	/** Original agent-level auto-exit, preserved before any headless-mode override. */
 	agentAutoExit?: boolean;
 	spawnPolicy?: SpawnPolicyResult;
+	/** The re-verified resource inventory of a policy-managed child. */
+	policyLaunch?: PolicyLaunch;
 }
 
 function loadAgentDefaults(
 	agentName: string,
 	cwdHint: string | null | undefined,
 	baseCwd: string,
+	globalOnly: boolean,
 ): AgentDefaults | null {
-	return loadAgentDefaultsFromDefinitions(agentName, cwdHint, baseCwd, resolveSubagentCwd);
+	return loadAgentDefaultsFromDefinitions(agentName, cwdHint, baseCwd, resolveSubagentCwd, { globalOnly });
 }
 
 function resolvePreparedSpawnPolicy(params: SubagentParamsInput, agentDefs: AgentDefaults | null): SpawnPolicyResult {
@@ -113,12 +117,17 @@ function resolvePreparedSpawnPolicy(params: SubagentParamsInput, agentDefs: Agen
  * A policy-managed child loads only the resources its policy launch names, in
  * place of ambient discovery. The definition is re-read here, after
  * authorization, so a field the policy forbids fails the launch instead of
- * being dropped.
+ * being dropped, and the inventory is re-verified just before the argv is
+ * built from it.
  */
 function applyPolicyLaunch(params: SubagentParamsInput, agentDefs: AgentDefaults | null): AgentDefaults | null {
 	const policyLaunch = params.policyLaunch;
 	if (!policyLaunch) return agentDefs;
 	if (!agentDefs) throw new Error(`Policy-managed agent ${params.agent} has no readable definition.`);
+	const verification = verifyPolicyLaunch(policyLaunch, getAgentConfigDir());
+	if (verification.status === "rejected") {
+		throw new Error(`Policy-managed agent ${params.agent} failed resource verification: ${verification.message}`);
+	}
 	const spawning = agentDefs.spawning;
 	const forbidden = [
 		agentDefs.flags?.trim() ? "flags" : "",
@@ -131,12 +140,15 @@ function applyPolicyLaunch(params: SubagentParamsInput, agentDefs: AgentDefaults
 	if (forbidden.length > 0) {
 		throw new Error(`Policy-managed agent ${params.agent} must not set ${forbidden.join(", ")}.`);
 	}
+	// The managed argv is built from the verified inventory alone; these keep
+	// every other consumer of the definition from discovering resources.
 	return {
 		...agentDefs,
-		extensions: policyLaunch.extensions.length > 0 ? policyLaunch.extensions.join(",") : "none",
-		skills: policyLaunch.skills,
+		extensions: "none",
+		skills: "none",
 		injectSkills: undefined,
-		noContextFiles: policyLaunch.noContextFiles,
+		noContextFiles: true,
+		trustProject: false,
 	};
 }
 
@@ -145,7 +157,13 @@ export async function prepareSubagentLaunch(
 	ctx: SubagentLaunchContext,
 	mode: ResumeMode = "background",
 ): Promise<PreparedSubagentLaunch> {
-	const agentDefs = applyPolicyLaunch(params, params.agent ? loadAgentDefaults(params.agent, params.cwd, ctx.cwd) : null);
+	// A managed definition comes only from the global directory, whatever the
+	// policy file reads as now.
+	const managed = params.policyLaunch !== undefined;
+	const agentDefs = applyPolicyLaunch(
+		params,
+		params.agent ? loadAgentDefaults(params.agent, params.cwd, ctx.cwd, managed) : null,
+	);
 	const spawnPolicy = resolvePreparedSpawnPolicy(params, agentDefs);
 	// Preserve the original agent-level auto-exit before any headless-mode override
 	// so that persisted metadata always reflects the agent file, not the runtime override.
@@ -162,7 +180,8 @@ export async function prepareSubagentLaunch(
 	// seedSubagentSessionFile with a clear error.
 	const parentSessionDir = sessionFile !== null ? dirname(sessionFile) : join(tmpdir(), "pi-subagents", "parentless");
 	const childLaunchPlan = await buildChildLaunchPlan({
-		params,
+		// Caller Skill fields never reach a managed child's discovery or metadata.
+		params: managed ? { ...params, skills: undefined } : params,
 		agentDefs,
 		parentCwd: ctx.cwd,
 		parentSessionDir,
@@ -173,6 +192,11 @@ export async function prepareSubagentLaunch(
 	});
 	const { effectiveModel, effectiveThinking, effectiveModelRef, runtimePaths, subagentSessionFile, sessionTitle } =
 		childLaunchPlan;
+	if (params.policyLaunch && runtimePaths.effectiveAgentConfigDir !== getAgentConfigDir()) {
+		throw new Error(
+			`Policy-managed agent ${params.agent} would run with agent directory ${runtimePaths.effectiveAgentConfigDir}, not the verified ${getAgentConfigDir()}.`,
+		);
+	}
 	const {
 		tools: effectiveTools,
 		skills: effectiveSkills,
@@ -203,6 +227,7 @@ export async function prepareSubagentLaunch(
 		identityInSystemPrompt,
 		agentAutoExit,
 		spawnPolicy,
+		...(params.policyLaunch ? { policyLaunch: params.policyLaunch } : {}),
 	};
 }
 
@@ -271,6 +296,28 @@ export function getExtensionLaunchArgs(
 		args.push("-e", getSubagentsExtensionPath());
 	}
 	return args;
+}
+
+/** Discovery a managed child never performs, and project-local files it ignores. */
+const MANAGED_DISCOVERY_ARGS = [
+	"--no-skills",
+	"--no-prompt-templates",
+	"--no-themes",
+	"--no-context-files",
+	"--no-approve",
+] as const;
+
+/**
+ * The complete resource section of a managed child's argv: exactly the
+ * verified inventory in policy order, the completion helper first, with every
+ * discovery path disabled. Nothing from the definition or caller reaches it.
+ */
+export function getManagedResourceLaunchArgs(launch: PolicyLaunch): string[] {
+	return [
+		"--no-extensions",
+		...launch.extensions.flatMap((extension) => ["-e", extension.files[0].path]),
+		...MANAGED_DISCOVERY_ARGS,
+	];
 }
 
 export function getFlagsLaunchArgs(flags: string | undefined): string[] {

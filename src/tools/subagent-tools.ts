@@ -436,7 +436,10 @@ export function registerSubagentCoreTools(
 							routing[index].policyLaunch,
 						);
 						const evidence = routing[index].evidence;
-						if (evidence.status === "managed") running.routing = evidence;
+						if (evidence.status === "managed") {
+							running.routing = evidence;
+							running.policyLaunch = routing[index].policyLaunch;
+						}
 						unlaunchedSlots -= slotCosts[index];
 						launched.push(running);
 						runtime.wireSubagentSteerBack(

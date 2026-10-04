@@ -1,5 +1,3 @@
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { getSubagentDisplayTitle, isSetTabTitleToolEnabled } from "../agents/titles.ts";
 import { createZellijCommandSurface } from "../mux/zellij-placement.ts";
 import { getZellijShellCommand, resolveZellijTarget } from "../mux/zellij-runtime.ts";
@@ -23,6 +21,7 @@ import {
 import {
 	getApprovalLaunchArgs,
 	getFlagsLaunchArgs,
+	getManagedResourceLaunchArgs,
 	getPreparedExtensionLaunchArgs,
 	getPreparedModel,
 	getPreparedRoleBlock,
@@ -33,6 +32,7 @@ import {
 	isPreparedChildSpawningAllowed,
 	type SubagentLaunchContext,
 } from "./prep.ts";
+import { getCompletionHelperPath } from "./completion-helper.ts";
 import { writeSystemPromptArtifact, writeTaskArtifact } from "./prompt-artifacts.ts";
 import { expandSubagentTask } from "./task-expansion.ts";
 import { traceSubagentLaunch } from "./trace.ts";
@@ -104,14 +104,16 @@ export async function launchInteractiveSubagent(
 	if (skillInjection) fullTask = `${skillInjection}\n\n${fullTask}`;
 
 	const piArgs = getPreparedSessionLaunchArgs(prepared);
-	const subagentDonePath = join(dirname(dirname(fileURLToPath(import.meta.url))), "tools", "subagent-done.ts");
-	for (const arg of getPreparedExtensionLaunchArgs(prepared, subagentDonePath)) {
+	const managed = prepared.policyLaunch;
+	for (const arg of managed
+		? getManagedResourceLaunchArgs(managed)
+		: getPreparedExtensionLaunchArgs(prepared, getCompletionHelperPath())) {
 		piArgs.push(arg);
 	}
 
 	const model = getPreparedModel(prepared);
 	if (model) piArgs.push("--model", model);
-	if (resolveSubagentNoContextFiles(prepared.agentDefs)) {
+	if (!managed && resolveSubagentNoContextFiles(prepared.agentDefs)) {
 		piArgs.push("--no-context-files");
 	}
 
@@ -127,7 +129,7 @@ export async function launchInteractiveSubagent(
 		const value = flag === "--system-prompt" ? writeSystemPromptArtifact(params.name, text, ctx) : text;
 		piArgs.push(flag, value);
 	}
-	for (const arg of getApprovalLaunchArgs(prepared.agentDefs, "interactive")) {
+	for (const arg of managed ? [] : getApprovalLaunchArgs(prepared.agentDefs, "interactive")) {
 		piArgs.push(arg);
 	}
 	for (const arg of getSubagentToolLaunchArgs(
@@ -137,10 +139,10 @@ export async function launchInteractiveSubagent(
 	)) {
 		piArgs.push(arg);
 	}
-	for (const arg of getPreparedSkillLaunchArgs(prepared)) {
+	for (const arg of managed ? [] : getPreparedSkillLaunchArgs(prepared)) {
 		piArgs.push(arg);
 	}
-	for (const flag of getFlagsLaunchArgs(prepared.agentDefs?.flags)) {
+	for (const flag of managed ? [] : getFlagsLaunchArgs(prepared.agentDefs?.flags)) {
 		piArgs.push(flag);
 	}
 

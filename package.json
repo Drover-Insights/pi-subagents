@@ -33,7 +33,7 @@
 		"test:live-herdr-timeout-wrap-up": "node scripts/test-live-herdr-timeout-wrap-up.mjs"
 	},
 	"peerDependencies": {
-		"@earendil-works/pi-ai": ">=0.79.0",
+		"@earendil-works/pi-ai": ">=0.85.0",
 		"@earendil-works/pi-coding-agent": ">=0.85.0",
 		"@earendil-works/pi-tui": ">=0.79.0",
 		"typebox": "*"

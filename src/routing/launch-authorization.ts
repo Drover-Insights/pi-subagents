@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import type { AgentDefaults } from "../agents/definitions.ts";
-import type { PolicyLaunch } from "../types.ts";
+import { getPackageRoot } from "../launch/completion-helper.ts";
+import type { ManagedExtension, PolicyLaunch } from "../types.ts";
 import type { CanonicalPolicyState, CanonicalRoutingPolicy, RoutingInteractionMode } from "./canonical-policy.ts";
 
 /**
@@ -35,6 +36,7 @@ type PolicyRejectionReason =
 	| "definition_cwd_forbidden"
 	| "task_expansion_forbidden"
 	| "verifier_forbidden"
+	| "resource_grant_forbidden"
 	| "pilot_case_required"
 	| "unknown_pilot_case"
 	| "pilot_case_mismatch"
@@ -92,9 +94,16 @@ function deepFreeze<T>(value: T): T {
 	return value;
 }
 
-function extensionPath(policy: CanonicalRoutingPolicy, id: string, agentDir: string): string {
+/**
+ * The pinned files of one catalogued extension, as absolute paths. The
+ * completion helper's catalog paths name files of this package; pi-config
+ * paths name files of the agent directory. The policy parser admits no other
+ * source for a loaded extension.
+ */
+function managedExtension(policy: CanonicalRoutingPolicy, id: string, agentDir: string): ManagedExtension {
 	const entry = policy.extensionCatalog[id];
-	return entry.source === "pi-config" ? join(agentDir, entry.files[0].path) : entry.source;
+	const base = entry.source === "pi-config" ? agentDir : getPackageRoot();
+	return { id, files: entry.files.map((file) => ({ path: join(base, file.path), sha256: file.sha256 })) };
 }
 
 /**
@@ -195,20 +204,21 @@ export function authorizeLaunch(request: LaunchAuthorizationRequest): LaunchAuth
 		pilotCase = caseId;
 	}
 
-	const route = role.routes[capabilityClass];
 	const grant = policy.resourceGrants[role.resourceGrant];
+	if (grant.skills.length > 0 || grant.projectResources) {
+		return reject(
+			"resource_grant_forbidden",
+			`The ${roleId} role's resource grant ${role.resourceGrant} enables Skills or project resources, which a managed child cannot load.`,
+		);
+	}
+	const route = role.routes[capabilityClass];
 	const grantedExtensions = policy.extensionGrants[roleId] ?? [];
-	const loadedExtensions = [
-		...policy.mandatoryExtensions.filter((id) => id !== "subagent-completion"),
-		...grantedExtensions,
-	];
-	const launch: PolicyLaunch = {
+	const loadedExtensions = [...policy.mandatoryExtensions, ...grantedExtensions];
+	const launch: PolicyLaunch = deepFreeze({
 		model: `${route.provider}/${route.model}`,
 		thinking: route.effort,
-		extensions: loadedExtensions.map((id) => extensionPath(policy, id, request.agentDir)),
-		skills: grant.skills.length === 0 ? "none" : grant.skills.join(","),
-		noContextFiles: !grant.projectResources,
-	};
+		extensions: loadedExtensions.map((id) => managedExtension(policy, id, request.agentDir)),
+	});
 	const evidence: ManagedRoutingEvidence = deepFreeze({
 		status: "managed",
 		generation: policy.generation,
@@ -219,7 +229,7 @@ export function authorizeLaunch(request: LaunchAuthorizationRequest): LaunchAuth
 		interactionMode: request.interactionMode,
 		pilotCase,
 		route: { provider: route.provider, model: route.model, effort: route.effort },
-		extensions: [...policy.mandatoryExtensions, ...grantedExtensions],
+		extensions: loadedExtensions,
 		skills: [...grant.skills],
 		projectResources: grant.projectResources,
 		spawning: false,

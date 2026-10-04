@@ -295,6 +295,12 @@ function parseRoles(
 		if (role.childLaunch === true && grantSkills.includes("*")) {
 			throw new Error(`Role ${name} is a child role and cannot use the all-Skills grant ${resourceGrant}.`);
 		}
+		const grantProjectResources = (resourceGrants[resourceGrant] as { projectResources: boolean }).projectResources;
+		if (role.childLaunch === true && state === "pilot" && (grantSkills.length > 0 || grantProjectResources)) {
+			throw new Error(
+				`Role ${name} is a pilot role and cannot use resource grant ${resourceGrant}, which enables Skills or project resources.`,
+			);
+		}
 		const routes = record(role.routes, `Role ${name} routes`);
 		exactKeys(routes, modes, `Role ${name} routes`);
 		for (const [capability, routeValue] of Object.entries(routes)) {
@@ -408,6 +414,11 @@ function parseExtensions(policy: Record<string, unknown>, canonicalRoles: readon
 			}
 			if (repositoryOf(id) === SPAWNING_REPOSITORY) {
 				throw new Error(`extensionGrants.${role} must not grant subagent spawning support through ${id}.`);
+			}
+			if ((extensionCatalog[id] as { source: string }).source !== "pi-config") {
+				throw new Error(
+					`extensionGrants.${role} must not grant ${id}, whose catalog source is a Git commit rather than a verified local file.`,
+				);
 			}
 		}
 		if (!grant.includes(ROUTE_GUARD_EXTENSION)) {

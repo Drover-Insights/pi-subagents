@@ -662,8 +662,6 @@ describe("child launch plan", () => {
 					model: "openai-codex/gpt-5.6-luna",
 					thinking: "low",
 					extensions: [],
-					skills: "none",
-					noContextFiles: true,
 				},
 			},
 			agentDefs: {
@@ -693,8 +691,6 @@ describe("child launch plan", () => {
 				model: "openai-codex/gpt-5.6-luna",
 				thinking: "low",
 				extensions: [],
-				skills: "none",
-				noContextFiles: true,
 			},
 		};
 		const options = {

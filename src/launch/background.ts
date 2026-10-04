@@ -1,6 +1,4 @@
 import { spawn } from "node:child_process";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { getSubagentDisplayTitle } from "../agents/titles.ts";
 import { clearSubagentExitSidecar } from "../session/exit-sidecar.ts";
 import { buildPiPromptArgs } from "../session/session-files.ts";
@@ -21,6 +19,7 @@ import {
 import {
 	getApprovalLaunchArgs,
 	getFlagsLaunchArgs,
+	getManagedResourceLaunchArgs,
 	getPreparedExtensionLaunchArgs,
 	getPreparedModel,
 	getPreparedRoleBlock,
@@ -31,6 +30,7 @@ import {
 	isPreparedChildSpawningAllowed,
 	type SubagentLaunchContext,
 } from "./prep.ts";
+import { getCompletionHelperPath } from "./completion-helper.ts";
 import { writeTaskArtifact } from "./prompt-artifacts.ts";
 import { expandSubagentTask } from "./task-expansion.ts";
 
@@ -63,7 +63,7 @@ export async function buildBackgroundLaunchPlan(
 ): Promise<BackgroundLaunchPlan> {
 	const launch = await coordinateSubagentLaunch(params, { ...ctx, autoExit: true }, { mode: "background" });
 	const { prepared, directTask } = launch;
-	const subagentDonePath = join(dirname(dirname(fileURLToPath(import.meta.url))), "tools", "subagent-done.ts");
+	const subagentDonePath = getCompletionHelperPath();
 	let fullTask: string;
 	if (options.frozenFullTask !== undefined) {
 		// Byte-identical fan-out candidates: skip expansion entirely and reuse
@@ -86,14 +86,15 @@ export async function buildBackgroundLaunchPlan(
 		if (skillInjection) fullTask = `${skillInjection}\n\n${fullTask}`;
 	}
 
+	const managed = prepared.policyLaunch;
 	const args: string[] = [
 		"-p",
 		...getPreparedSessionLaunchArgs(prepared),
-		...getPreparedExtensionLaunchArgs(prepared, subagentDonePath),
+		...(managed ? getManagedResourceLaunchArgs(managed) : getPreparedExtensionLaunchArgs(prepared, subagentDonePath)),
 	];
 	const model = getPreparedModel(prepared);
 	if (model) args.push("--model", model);
-	if (resolveSubagentNoContextFiles(prepared.agentDefs)) args.push("--no-context-files");
+	if (!managed && resolveSubagentNoContextFiles(prepared.agentDefs)) args.push("--no-context-files");
 
 	const appendSystemPlan = buildAppendSystemInheritancePlan({
 		inheritAppendSystem: launch.launchMetadata.inheritAppendSystem === true,
@@ -102,7 +103,7 @@ export async function buildBackgroundLaunchPlan(
 		boundarySystemPrompt: launch.boundarySystemPrompt ? CHILD_CONTEXT_BOUNDARY_SYSTEM_PROMPT : undefined,
 	});
 	args.push(...appendSystemPlan.promptArgs);
-	args.push(...getApprovalLaunchArgs(prepared.agentDefs, "background"));
+	if (!managed) args.push(...getApprovalLaunchArgs(prepared.agentDefs, "background"));
 	args.push(
 		...getSubagentToolLaunchArgs(
 			prepared.effectiveTools,
@@ -110,8 +111,10 @@ export async function buildBackgroundLaunchPlan(
 			options.spawningDenied ? false : isPreparedChildSpawningAllowed(prepared),
 		),
 	);
-	args.push(...getPreparedSkillLaunchArgs(prepared));
-	args.push(...getFlagsLaunchArgs(prepared.agentDefs?.flags));
+	if (!managed) {
+		args.push(...getPreparedSkillLaunchArgs(prepared));
+		args.push(...getFlagsLaunchArgs(prepared.agentDefs?.flags));
+	}
 
 	const taskArg = options.frozenTaskArg ?? `@${writeTaskArtifact(params.name, fullTask, ctx)}`;
 	for (const promptArg of buildPiPromptArgs(getPreparedSkillList(prepared), taskArg, directTask)) {
