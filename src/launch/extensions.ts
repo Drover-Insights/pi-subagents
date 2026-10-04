@@ -1,3 +1,6 @@
+import { execFileSync } from "node:child_process";
+import { readFileSync, realpathSync } from "node:fs";
+import { join } from "node:path";
 import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { AgentDefaults } from "../agents/definitions.ts";
 import type { ResumeMode } from "../session/session-files.ts";
@@ -26,6 +29,73 @@ function parseNpmSource(source: string): NpmSource | undefined {
 	return { name: spec };
 }
 
+/**
+ * The ref of a Git source, split the way Pi's parser splits it: after the first
+ * `@` of the repository path, or a `#committish`. Pi does not export its parser.
+ * Seeing a ref Pi would not see only costs a fallback, so this errs toward one.
+ */
+function gitSourceRef(source: string): string | undefined {
+	const url = source.replace(/^git:/, "").trim();
+	const hash = url.indexOf("#");
+	if (hash >= 0) return url.slice(hash + 1);
+	const scpPath = url.match(/^git@[^:]+:(.+)$/)?.[1];
+	let path = scpPath;
+	if (path === undefined && url.includes("://")) {
+		try {
+			path = new URL(url).pathname;
+		} catch {
+			return "";
+		}
+	}
+	path ??= url.slice(url.indexOf("/") + 1);
+	const at = path.indexOf("@");
+	return at < 0 ? undefined : path.slice(at + 1);
+}
+
+function git(repository: string, args: string[]): string {
+	// Drop inherited GIT_* variables so they cannot point git at another repository.
+	const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
+	// Use -C rather than cwd: an empty PATH entry resolves against cwd, which
+	// would run a `git` file inside the checkout being validated.
+	return execFileSync("git", ["-C", repository, ...args], {
+		env,
+		encoding: "utf8",
+		stdio: "pipe",
+		timeout: 5000,
+	}).trim();
+}
+
+/**
+ * A Git install is valid when it is its own checkout and, for a source with a
+ * ref, HEAD is at the commit that ref resolves to. Pi keys Git installs by
+ * host and path only, so a settings ref edited without `pi install` leaves the
+ * old commit checked out.
+ */
+function isValidGitInstall(installedPath: string, source: string): boolean {
+	try {
+		if (realpathSync(git(installedPath, ["rev-parse", "--show-toplevel"])) !== realpathSync(installedPath)) {
+			return false;
+		}
+		const ref = gitSourceRef(source);
+		if (ref === undefined) return true;
+		if (!ref || ref.startsWith("-")) return false;
+		return (
+			git(installedPath, ["rev-parse", "--verify", "HEAD^{commit}"]) ===
+			git(installedPath, ["rev-parse", "--verify", `${ref}^{commit}`])
+		);
+	} catch {
+		return false;
+	}
+}
+
+function isValidNpmInstall(installedPath: string, name: string): boolean {
+	try {
+		return JSON.parse(readFileSync(join(installedPath, "package.json"), "utf8").replace(/^\uFEFF/, ""))?.name === name;
+	} catch {
+		return false;
+	}
+}
+
 function isProjectTrustedForLaunch(agentDefs: AgentDefaults | null, mode: ResumeMode): boolean {
 	let trusted = mode !== "background" && agentDefs?.trustProject === true;
 	for (const flag of parseCommandWords(agentDefs?.flags ?? "")) {
@@ -43,7 +113,9 @@ function listConfiguredPackages(cwd: string, agentDir: string, projectTrusted: b
 }
 
 /**
- * Reuse configured, unfiltered package installations for child allowlists.
+ * Reuse configured, unfiltered, valid package installations for child allowlists.
+ * An install that does not validate keeps the original source, so Pi's
+ * temporary resolution installs it instead.
  * Unversioned npm sources match by package name. Git sources require the exact
  * configured source, including any ref, so managed reuse cannot change refs.
  * A Git source the child Pi root does not configure falls back to the parent
@@ -99,7 +171,14 @@ export function resolveConfiguredExtensionSources(
 			matches.find((entry) => entry.scope === "project") ??
 			matches[0] ??
 			(isGitSource(source) ? listParentPackages().find(matchesSource) : undefined);
-		if (!match || match.filtered || !match.installedPath) {
+		if (
+			!match ||
+			match.filtered ||
+			!match.installedPath ||
+			!(npmSource
+				? isValidNpmInstall(match.installedPath, npmSource.name)
+				: isValidGitInstall(match.installedPath, source))
+		) {
 			resolved.push(source);
 			continue;
 		}
