@@ -75,8 +75,10 @@ describe("internal launch overrides (forcedCwd/launchEnv)", () => {
 			forcedCwd: "/tmp/worktree",
 			launchEnv: { COMPOSE_PROJECT_NAME: "bo-run-w0" },
 			policyLaunch: { model: "provider/policy-model", thinking: "low", extensions: [], skills: "none", noContextFiles: true },
+			trustedLaunch: { version: "pi-subagents.trusted-launch/v1", generation: "g", requestId: "op" },
 		});
 		assert.equal(stripped.forcedCwd, undefined);
+		assert.equal(stripped.trustedLaunch, undefined);
 		assert.equal(stripped.launchEnv, undefined);
 		assert.equal(stripped.policyLaunch, undefined);
 		assert.equal(stripped.agent, "worker");
@@ -118,10 +120,12 @@ describe("internal launch overrides (forcedCwd/launchEnv)", () => {
 				agent: "worker",
 				forcedCwd: "/tmp/worktree",
 				launchEnv: { PORT_OFFSET: "1000" },
+				trustedLaunch: { version: "pi-subagents.trusted-launch/v1", generation: "g", requestId: "op" },
 			},
 			null,
 		);
 		assert.equal(enforced.forcedCwd, "/tmp/worktree");
+		assert.deepEqual(enforced.trustedLaunch, { version: "pi-subagents.trusted-launch/v1", generation: "g", requestId: "op" });
 		assert.deepEqual(enforced.launchEnv, { PORT_OFFSET: "1000" });
 	});
 
@@ -170,10 +174,11 @@ describe("internal launch overrides (forcedCwd/launchEnv)", () => {
 
 		assert.equal(launch.forcedCwd, worktree);
 		// Blueprint resolution stays source-based: the forced cwd never leaks
-		// into runtime path resolution or persisted metadata.
+		// into runtime path resolution. Persisted metadata records the directory
+		// the child actually runs in.
 		assert.equal(launch.prepared.runtimePaths.effectiveCwd, null);
 		assert.equal(launch.prepared.runtimePaths.cwdBase, source);
-		assert.equal(launch.launchMetadata.cwd, source);
+		assert.equal(launch.launchMetadata.cwd, worktree);
 		assert.equal(Object.isFrozen(launch.prepared), true);
 		assert.equal(Object.isFrozen(launch.prepared.agentDefs), true);
 		assert.throws(() => {

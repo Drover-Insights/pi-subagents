@@ -1,5 +1,7 @@
 import { coordinateSubagentLaunch } from "../../src/launch/launch-coordinator.ts";
 import { buildBackgroundLaunchPlan } from "../../src/launch/background.ts";
+import { getPersistedSessionParityArgs } from "../../src/launch/prep.ts";
+import { getResumeCwd, getResumeDefinitionCwd } from "../../src/launch/resume.ts";
 import {
 	ASSISTANT_MSG,
 	assert,
@@ -132,6 +134,131 @@ describe("launch coordinator", () => {
 			true,
 		);
 		assert.equal(launch.launchEntryCount, entries.length);
+	});
+
+	for (const mode of ["background", "interactive"] as const) {
+		it(`persists the forced child cwd as the ${mode} launch metadata cwd`, async () => {
+			const source = createTestDir();
+			const effective = createTestDir();
+			mkdirSync(join(source, ".pi", "agents"), { recursive: true });
+			writeFileSync(join(source, ".pi", "agents", "worker.md"), `---\nname: worker\nmode: ${mode}\n---\nWork.`);
+			const parentSession = join(source, "parent.jsonl");
+			writeFileSync(parentSession, `${JSON.stringify(SESSION_HEADER)}\n`);
+
+			const launch = await coordinateSubagentLaunch(
+				{ name: "forced-worker", title: "Forced worker", task: "Work", agent: "worker", forcedCwd: effective },
+				{
+					cwd: source,
+					sessionManager: {
+						getSessionFile: () => parentSession,
+						getSessionId: () => "parent-session-id",
+						getLeafId: () => null,
+					},
+				},
+				{ mode },
+			);
+
+			assert.equal(launch.forcedCwd, effective);
+			assert.equal(launch.launchMetadata.cwd, effective);
+			assert.equal(launch.launchMetadata.blueprintCwd, source);
+			const entries = getEntries(launch.prepared.subagentSessionFile) as Array<Record<string, unknown>>;
+			assert.equal(entries[0].cwd, effective);
+			const persisted = entries.find((entry) => entry.customType === "pi-subagents_launch_metadata") as
+				| { data?: { cwd?: string } }
+				| undefined;
+			assert.equal(persisted?.data?.cwd, effective);
+		});
+	}
+
+	it("resumes a forced launch in its child cwd with definitions and skills from its blueprint cwd", async () => {
+		const source = createTestDir();
+		const effective = createTestDir();
+		const skillDir = join(source, ".pi", "skills", "pua");
+		mkdirSync(skillDir, { recursive: true });
+		writeFileSync(join(skillDir, "SKILL.md"), "---\nname: pua\ndescription: Debug.\n---\n\n# PUA");
+		const metadata = {
+			version: 1 as const,
+			timestamp: "2026-05-08T00:00:00.000Z",
+			name: "forced-worker",
+			mode: "background" as const,
+			sessionMode: "standalone" as const,
+			parentClosePolicy: "terminate" as const,
+			async: true,
+			denyTools: [],
+			noContextFiles: false,
+			noSession: false,
+			agentConfigDir: join(source, "agent-root"),
+			cwd: effective,
+			blueprintCwd: source,
+			skills: "pua",
+			boundarySystemPrompt: false,
+		};
+
+		assert.equal(getResumeCwd(metadata), effective);
+		assert.equal(getResumeDefinitionCwd(metadata), source);
+		assert.equal(getResumeDefinitionCwd({ ...metadata, blueprintCwd: undefined }), effective);
+		const args = await getPersistedSessionParityArgs(metadata, "background", false);
+		assert.deepEqual(args.slice(args.indexOf("--no-skills"), args.indexOf("--no-skills") + 3), [
+			"--no-skills",
+			"--skill",
+			join(skillDir, "SKILL.md"),
+		]);
+	});
+
+	it("records no blueprint cwd when the child runs where its blueprint was resolved", async () => {
+		const cwd = createTestDir();
+		mkdirSync(join(cwd, ".pi", "agents"), { recursive: true });
+		writeFileSync(join(cwd, ".pi", "agents", "worker.md"), "---\nname: worker\nmode: background\n---\nWork.");
+		const parentSession = join(cwd, "parent.jsonl");
+		writeFileSync(parentSession, `${JSON.stringify(SESSION_HEADER)}\n`);
+		const launch = await coordinateSubagentLaunch(
+			{ name: "plain-worker", title: "Plain worker", task: "Work", agent: "worker" },
+			{
+				cwd,
+				sessionManager: {
+					getSessionFile: () => parentSession,
+					getSessionId: () => "parent-session-id",
+					getLeafId: () => null,
+				},
+			},
+			{ mode: "background" },
+		);
+		assert.equal(launch.launchMetadata.cwd, cwd);
+		assert.equal("blueprintCwd" in launch.launchMetadata, false);
+	});
+
+	it("persists trusted launch provenance in launch metadata", async () => {
+		const cwd = createTestDir();
+		mkdirSync(join(cwd, ".pi", "agents"), { recursive: true });
+		writeFileSync(join(cwd, ".pi", "agents", "worker.md"), "---\nname: worker\nmode: background\n---\nWork.");
+		const parentSession = join(cwd, "parent.jsonl");
+		writeFileSync(parentSession, `${JSON.stringify(SESSION_HEADER)}\n`);
+		const trustedLaunch = {
+			version: "pi-subagents.trusted-launch/v1",
+			generation: "gen-1",
+			requestId: "op_01",
+			labels: { runId: "run_01" },
+		};
+
+		const launch = await coordinateSubagentLaunch(
+			{ name: "trusted-worker", title: "Trusted worker", task: "Work", agent: "worker", trustedLaunch },
+			{
+				cwd,
+				sessionManager: {
+					getSessionFile: () => parentSession,
+					getSessionId: () => "parent-session-id",
+					getLeafId: () => null,
+				},
+			},
+			{ mode: "background" },
+		);
+
+		assert.deepEqual(launch.launchMetadata.trustedLaunch, trustedLaunch);
+		const entries = getEntries(launch.prepared.subagentSessionFile) as Array<Record<string, unknown>>;
+		const persisted = entries.find((entry) => entry.customType === "pi-subagents_launch_metadata") as
+			| { data?: { trustedLaunch?: unknown } }
+			| undefined;
+		assert.deepEqual(persisted?.data?.trustedLaunch, trustedLaunch);
 	});
 
 	it("persists the operator Zellij placement policy and immediate parent group", async () => {

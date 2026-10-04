@@ -107,3 +107,20 @@ export function getTerminalAssistantSummary(entries: SessionEntryLike[]): string
 export function shouldReapStableTerminalSummary(running: Pick<{ autoExit?: boolean }, "autoExit">): boolean {
 	return running.autoExit === true;
 }
+
+export function getSubagentNameError(name: string | undefined): string | null {
+	const trimmed = name?.trim();
+	if (!trimmed) {
+		return "Error: name is required for subagent launches. Provide a lower-kebab <scope>-<role> handle like auth-scout, diff-reviewer, or session-tester.";
+	}
+	if (trimmed !== name) {
+		return `Error: subagent name ${JSON.stringify(name)} has surrounding whitespace. Use lower-kebab <scope>-<role>, e.g. auth-scout.`;
+	}
+	if (trimmed.length > 32) {
+		return `Error: subagent name ${JSON.stringify(name)} is too long. Use 2-4 lower-kebab words and keep it at 32 characters or fewer.`;
+	}
+	if (!/^[a-z][a-z0-9]*(?:-[a-z0-9]+){1,3}$/.test(trimmed)) {
+		return `Error: subagent name ${JSON.stringify(name)} must be lower-kebab <scope>-<role> with 2-4 words, e.g. auth-scout, diff-reviewer, or session-tester. Do not use spaces, underscores, Title Case, or prose.`;
+	}
+	return null;
+}
