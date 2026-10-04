@@ -22,13 +22,28 @@ export interface SubagentTimeoutBudget {
 	idleTimeoutSeconds?: number;
 }
 
-/** The fixed route and resources the routing policy authorized for a managed child. */
+/** One catalogued extension file, as an absolute path and its pinned sha256. */
+interface ManagedExtensionFile {
+	path: string;
+	sha256: string;
+}
+
+/** One extension a managed child loads; its first file is the entry `-e` loads. */
+export interface ManagedExtension {
+	id: string;
+	files: readonly ManagedExtensionFile[];
+}
+
+/**
+ * The fixed route and exact resource inventory the routing policy authorized
+ * for a managed child: the completion helper, the workspace boundary, then the
+ * role grant in declared order. A managed child loads no Skills, context
+ * files, prompt templates, themes or project-local resources.
+ */
 export interface PolicyLaunch {
 	model: string;
 	thinking: string;
-	extensions: string[];
-	skills: string;
-	noContextFiles: boolean;
+	extensions: readonly ManagedExtension[];
 }
 
 export interface SubagentParamsInput {
@@ -152,6 +167,8 @@ export interface RunningSubagent {
 	agent?: string;
 	/** Launch authority of a policy-managed child; later parent requests are gated against it. */
 	routing?: ManagedRoutingEvidence;
+	/** The verified resource inventory a managed child launched with; a relaunch re-verifies it. */
+	policyLaunch?: PolicyLaunch;
 	mode: "interactive" | "background";
 	executionState: "starting" | "running";
 	deliveryState: DeliveryState;

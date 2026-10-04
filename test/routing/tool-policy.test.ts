@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { appendFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, test } from "node:test";
 import type { AgentDefaults } from "../../src/agents/definitions.ts";
@@ -8,6 +9,7 @@ import { registerSubagentCoreTools, type SubagentToolRuntime } from "../../src/t
 import type { RunningSubagent, SubagentParamsInput, SubagentResult } from "../../src/types.ts";
 import "../support/env.ts";
 import {
+	COMPLETION_HELPER_PATH,
 	canonicalPolicyDocument,
 	emptyAgentDir,
 	type PolicyDocument,
@@ -321,15 +323,23 @@ describe("launch authorization through the subagent tool", () => {
 		const result = await run(request("pilot-scout", { capabilityClass: "literal", pilotCase: "scout-literal-1" }));
 
 		assert.deepEqual(reservations, [["scout-literal-1", "dispatch-1"]]);
+		const catalog = canonicalPolicyDocument().extensionCatalog;
+		const pinned = (id: string, base: string) =>
+			catalog[id].files.map((file: { path: string; sha256: string }) => ({
+				path: join(base, file.path),
+				sha256: file.sha256,
+			}));
 		assert.deepEqual(launched[0]?.policyLaunch, {
 			model: "openai-codex/gpt-5.6-luna",
 			thinking: "low",
 			extensions: [
-				join(agentDir, "extensions/workspace-boundary/index.ts"),
-				join(agentDir, "extensions/drover-model-routing/index.ts"),
+				{
+					id: "subagent-completion",
+					files: [{ path: COMPLETION_HELPER_PATH, sha256: catalog["subagent-completion"].files[0].sha256 }],
+				},
+				{ id: "workspace-boundary", files: pinned("workspace-boundary", agentDir) },
+				{ id: "drover-model-routing", files: pinned("drover-model-routing", agentDir) },
 			],
-			skills: "none",
-			noContextFiles: true,
 		});
 		assert.deepEqual(result.details.routing, {
 			status: "managed",
@@ -349,6 +359,7 @@ describe("launch authorization through the subagent tool", () => {
 		});
 		assert.equal(Object.isFrozen(result.details.routing), true);
 		assert.equal(runs[0]?.routing, result.details.routing, "later parent requests are gated against this evidence");
+		assert.equal(runs[0]?.policyLaunch, launched[0]?.policyLaunch, "a wrap-up relaunch re-verifies this inventory");
 	});
 
 	test("selective and automated roles launch for granted classes without a pilot case", async () => {
@@ -388,7 +399,7 @@ describe("launch authorization through the subagent tool", () => {
 
 		await run(
 			request("implementer", {
-				policyLaunch: { model: "caller/smuggled", thinking: "xhigh", extensions: [], skills: "all", noContextFiles: false },
+				policyLaunch: { model: "caller/smuggled", thinking: "xhigh", extensions: [] },
 			}),
 		);
 
@@ -563,6 +574,115 @@ describe("launch authorization through the subagent tool", () => {
 		assert.deepEqual(
 			{ released, slots: getLiveSlotCount() },
 			{ released: [["scout-code-graph-1", "dispatch-1:1"]], slots: slotsBefore },
+		);
+	});
+
+	test("a missing or altered catalogued extension file rejects the whole call before any launch", async () => {
+		const batch = {
+			children: [
+				request("pilot-worker", { capabilityClass: "implementation" }),
+				request("pilot-reviewer", { name: "diff-reviewer", capabilityClass: "review" }),
+			],
+		};
+		appendFileSync(join(agentDir, "extensions/drover-model-routing/policy.ts"), " ");
+		assert.deepEqual(await rejection(batch), { status: "policy_rejected", reason: "resource_unverified", launches: 0 });
+
+		agentDir = writeCanonicalPolicy();
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		rmSync(join(agentDir, "extensions/workspace-boundary/index.ts"));
+		const { run, launched } = harness();
+		const result = await run(batch);
+		assert.deepEqual(
+			{ reason: result.details.reason, launches: launched.length },
+			{ reason: "resource_unverified", launches: 0 },
+		);
+		assert.match(result.content[0]?.text ?? "", /workspace-boundary/);
+	});
+
+	test("a missing or altered file rejects before any pilot attempt is reserved", async () => {
+		appendFileSync(join(agentDir, "extensions/workspace-boundary/index.ts"), "// drift\n");
+		const { ledger, reserved } = recordingLedger();
+
+		const result = await rejection(request("pilot-scout", { capabilityClass: "literal", pilotCase: "scout-literal-1" }), {
+			pilotAttempts: ledger,
+		});
+
+		assert.deepEqual({ ...result, reserved }, {
+			status: "policy_rejected",
+			reason: "resource_unverified",
+			launches: 0,
+			reserved: [],
+		});
+	});
+
+	test("rejects a completion helper catalog entry that is not the file the launcher loads", async () => {
+		usePolicy((policy) => {
+			policy.extensionCatalog["subagent-completion"].files = [
+				{ path: "src/index.ts", sha256: canonicalPolicyDocument().extensionCatalog["subagent-completion"].files[0].sha256 },
+			];
+		});
+
+		assert.equal(
+			(await rejection(request("pilot-worker", { capabilityClass: "implementation" }))).reason,
+			"resource_unverified",
+		);
+	});
+
+	test("rejects a route whose provider is neither built into Pi nor defined in models.json", async () => {
+		writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: {} }));
+		assert.equal(
+			(await rejection(request("pilot-reviewer", { capabilityClass: "review" }))).reason,
+			"provider_unknown",
+		);
+
+		writeFileSync(join(agentDir, "models.json"), "{ not json");
+		assert.equal(
+			(await rejection(request("pilot-reviewer", { capabilityClass: "review" }))).reason,
+			"provider_unknown",
+		);
+	});
+
+	test("a built-in provider passes without any models.json", async () => {
+		rmSync(join(agentDir, "models.json"));
+		const { run, launched } = harness();
+
+		const result = await run(request("pilot-worker", { capabilityClass: "implementation" }));
+
+		assert.deepEqual(
+			{ status: (result.details.routing as { status: string }).status, launches: launched.length },
+			{ status: "managed", launches: 1 },
+		);
+	});
+
+	test("rejects a non-pilot child role whose resource grant enables Skills or project resources", async () => {
+		for (const grant of [
+			{ skills: ["review"], projectResources: false },
+			{ skills: [], projectResources: true },
+		]) {
+			usePolicy((policy) => {
+				policy.resourceGrants.broad = grant;
+				policy.roles.worker.resourceGrant = "broad";
+			});
+			assert.equal(
+				(await rejection(request("pilot-worker", { capabilityClass: "implementation" }))).reason,
+				"resource_grant_forbidden",
+				JSON.stringify(grant),
+			);
+		}
+	});
+
+	test("reads models.json the way Pi does, with a byte order mark, comments and trailing commas", async () => {
+		writeFileSync(
+			join(agentDir, "models.json"),
+			'\uFEFF{\n  // the review provider\n  "providers": { "claude-primary": { "baseUrl": "http://127.0.0.1:9", }, },\n}\n',
+		);
+		const { run, launched } = harness();
+
+		const result = await run(request("pilot-reviewer", { capabilityClass: "review" }));
+
+		assert.deepEqual(
+			{ status: (result.details.routing as { status?: string } | undefined)?.status, launches: launched.length },
+			{ status: "managed", launches: 1 },
 		);
 	});
 });

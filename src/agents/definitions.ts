@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { loadCanonicalPolicy } from "../routing/canonical-policy.ts";
 import { normalizeVerifierModelRef } from "../vf/model-ref.ts";
 
 export interface AgentDefaults {
@@ -353,8 +354,21 @@ function parseVisibleTo(raw: string | undefined): string[] {
 
 export type ResolveAgentCwd = (cwdHint: string | null, baseCwd: string) => string;
 
-export function getEffectiveAgentDefinitions(baseCwd = process.cwd()): ResolvedAgentDefinition[] {
+/**
+ * Agent names the canonical routing policy manages. Their definitions come only
+ * from the global agent directory, so a project cannot shadow them.
+ */
+function getPolicyManagedAgentNames(configDir: string): ReadonlySet<string> {
+	const state = loadCanonicalPolicy(configDir);
+	return new Set(state.status === "loaded" ? Object.keys(state.policy.aliases) : []);
+}
+
+export function getEffectiveAgentDefinitions(
+	baseCwd = process.cwd(),
+	options: { globalOnly?: boolean } = {},
+): ResolvedAgentDefinition[] {
 	const configDir = getAgentConfigDir();
+	const managedNames = options.globalOnly ? new Set<string>() : getPolicyManagedAgentNames(configDir);
 	const agents = new Map<string, ResolvedAgentDefinition>();
 	const dirs = [
 		{
@@ -369,12 +383,14 @@ export function getEffectiveAgentDefinitions(baseCwd = process.cwd()): ResolvedA
 		},
 	];
 	for (const { path: dir, source, cwdBase } of dirs) {
+		if (source === "project" && options.globalOnly) continue;
 		if (!existsSync(dir)) continue;
 		for (const file of readdirSync(dir)
 			.filter((entry) => entry.endsWith(".md"))
 			.sort((a, b) => a.localeCompare(b))) {
 			const definition = parseAgentDefinition(join(dir, file), source, cwdBase);
 			if (!definition) continue;
+			if (source === "project" && managedNames.has(definition.name)) continue;
 			agents.set(definition.name, definition);
 		}
 	}
@@ -386,7 +402,8 @@ export function loadAgentDefaults(
 	cwdHint: string | null | undefined,
 	baseCwd: string,
 	resolveAgentCwd: ResolveAgentCwd,
+	options: { globalOnly?: boolean } = {},
 ): AgentDefaults | null {
 	const resolvedBaseCwd = resolveAgentCwd(cwdHint ?? null, baseCwd);
-	return getEffectiveAgentDefinitions(resolvedBaseCwd).find((agent) => agent.name === agentName) ?? null;
+	return getEffectiveAgentDefinitions(resolvedBaseCwd, options).find((agent) => agent.name === agentName) ?? null;
 }

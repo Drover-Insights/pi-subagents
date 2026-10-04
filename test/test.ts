@@ -40,6 +40,7 @@ import "./launch/interactive-delivery-failure.test.ts";
 import "./launch/launch-coordinator.test.ts";
 import "./launch/launch-overrides.test.ts";
 import "./launch/policy-launch.test.ts";
+import "./launch/real-pi-launch.test.ts";
 import "./launch/task-expansion.test.ts";
 import "./launch/herdr-interactive-launch.test.ts";
 import "./launch/config.test.ts";

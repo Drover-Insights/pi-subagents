@@ -6,6 +6,7 @@ import {
 	type ManagedRoutingEvidence,
 	type PilotAttemptLedger,
 } from "../routing/launch-authorization.ts";
+import { verifyPolicyLaunch } from "../routing/resource-verification.ts";
 import { asSubagentToolResult } from "../runtime/state.ts";
 import type { PolicyLaunch, SubagentParamsInput } from "../types.ts";
 
@@ -74,6 +75,10 @@ export function authorizeSubagentLaunches(
 		});
 		if (authorization.status === "policy_rejected") {
 			return policyRejection(authorization.reason, authorization.message);
+		}
+		if (authorization.status === "authorized") {
+			const verification = verifyPolicyLaunch(authorization.launch, agentDir);
+			if (verification.status === "rejected") return policyRejection(verification.reason, verification.message);
 		}
 		routing.push(
 			authorization.status === "authorized"

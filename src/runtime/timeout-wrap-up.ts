@@ -2,16 +2,17 @@ import { spawn } from "node:child_process";
 import { getAgentConfigDir } from "../agents/definitions.ts";
 import { loadCanonicalPolicy } from "../routing/canonical-policy.ts";
 import { checkManagedChildRequest } from "../routing/launch-authorization.ts";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { verifyPolicyLaunch } from "../routing/resource-verification.ts";
 import { getArtifactStorageRoot } from "../artifact-storage.ts";
 import { buildAppendSystemInheritancePlan } from "../launch/append-system.ts";
 import { getPiInvocation, getSubagentChildProcessEnv } from "../launch/child-command.ts";
 import { resolveDenyEnvPatterns } from "../launch/child-env.ts";
+import { getCompletionHelperPath } from "../launch/completion-helper.ts";
 import { CHILD_CONTEXT_BOUNDARY_SYSTEM_PROMPT } from "../launch/context-boundary.ts";
 import { parseEnvString } from "../launch/env.ts";
 import {
 	getExtensionLaunchArgs,
+	getManagedResourceLaunchArgs,
 	getPersistedPromptLaunchArgs,
 	getPersistedSessionParityArgs,
 } from "../launch/prep.ts";
@@ -34,6 +35,7 @@ import {
 	PI_SUBAGENT_TIMEOUT_WARN_THRESHOLD,
 	PI_SUBAGENT_TIMEOUT_WRAP_UP,
 } from "../tools/timeout-reminders.ts";
+import { getSubagentToolLaunchArgs } from "../tools/policy.ts";
 import { SPAWNING_TOOL_NAMES } from "../tools/tool-names.ts";
 import type { RunningSubagent } from "../types.ts";
 
@@ -90,16 +92,26 @@ async function getWrapUpLaunchParts(running: RunningSubagent, signal?: AbortSign
 }> {
 	const metadata = running.launchMetadata;
 	if (!metadata) throw new Error("The original launch metadata is unavailable.");
-	const subagentDonePath = join(dirname(fileURLToPath(import.meta.url)), "..", "tools", "subagent-done.ts");
 	const invocationMetadata = {
 		...metadata,
 		...(running.modelRef ? { modelRef: running.modelRef } : {}),
 	};
-	const extensionArgs = getExtensionLaunchArgs(invocationMetadata.extensions, subagentDonePath, false);
-	const parityArgs = [
-		...getPersistedPromptLaunchArgs(invocationMetadata),
-		...(await getPersistedSessionParityArgs(invocationMetadata, running.mode, false)),
-	].filter((arg) => arg !== "--no-session");
+	// A managed child relaunches from its verified inventory alone, never from
+	// saved extension, Skill, approval or flag metadata.
+	const managed = running.policyLaunch;
+	const extensionArgs = managed
+		? getManagedResourceLaunchArgs(managed)
+		: getExtensionLaunchArgs(invocationMetadata.extensions, getCompletionHelperPath(), false);
+	const parityArgs = managed
+		? [
+				...getPersistedPromptLaunchArgs(invocationMetadata),
+				...(invocationMetadata.modelRef ? ["--model", invocationMetadata.modelRef] : []),
+				...getSubagentToolLaunchArgs(invocationMetadata.tools, new Set(invocationMetadata.denyTools), false),
+			]
+		: [
+				...getPersistedPromptLaunchArgs(invocationMetadata),
+				...(await getPersistedSessionParityArgs(invocationMetadata, running.mode, false)),
+			].filter((arg) => arg !== "--no-session");
 	throwIfAborted(signal);
 	const env: Record<string, string> = {};
 	if (invocationMetadata.env) Object.assign(env, parseEnvString(invocationMetadata.env));
@@ -161,6 +173,13 @@ export async function restartSubagentForTimeoutWrapUp(
 	if (running.routing) {
 		const blocked = checkManagedChildRequest(loadCanonicalPolicy(getAgentConfigDir()), running.routing);
 		if (blocked) throw new Error(`Routing policy blocked the request: ${blocked}.`);
+		if (!running.policyLaunch) {
+			throw new Error("Routing policy blocked the request: the launch's verified resource inventory is unavailable.");
+		}
+		const verification = verifyPolicyLaunch(running.policyLaunch, getAgentConfigDir());
+		if (verification.status === "rejected") {
+			throw new Error(`Routing policy blocked the request: ${verification.message}`);
+		}
 	}
 	throwIfAborted(signal);
 	clearSubagentExitSidecar(running.sessionFile);

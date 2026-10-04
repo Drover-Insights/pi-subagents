@@ -1,7 +1,9 @@
-import type { ManagedRoutingEvidence } from "../../src/routing/launch-authorization.ts";
+import { appendFileSync, readFileSync } from "node:fs";
+import { loadCanonicalPolicy } from "../../src/routing/canonical-policy.ts";
+import { authorizeLaunch, type ManagedRoutingEvidence } from "../../src/routing/launch-authorization.ts";
 import { resumeSubagentSession } from "../../src/runtime/resume-service.ts";
 import { restartSubagentForTimeoutWrapUp } from "../../src/runtime/timeout-wrap-up.ts";
-import type { RunningSubagent } from "../../src/types.ts";
+import type { PolicyLaunch, RunningSubagent } from "../../src/types.ts";
 import {
 	assert,
 	beforeEach,
@@ -14,7 +16,12 @@ import {
 	writeFileSync,
 	writeSubagentLaunchMetadataEntryForTest,
 } from "../support/index.ts";
-import { canonicalPolicyDocument, type PolicyDocument, writeCanonicalPolicy } from "../support/routing-policy.ts";
+import {
+	COMPLETION_HELPER_PATH,
+	canonicalPolicyDocument,
+	type PolicyDocument,
+	writeCanonicalPolicy,
+} from "../support/routing-policy.ts";
 
 const EVIDENCE: ManagedRoutingEvidence = Object.freeze({
 	status: "managed",
@@ -51,8 +58,32 @@ function sessionIn(dir: string): string {
 /** A fake `pi` that records that it ran; the gate must stop requests before it. */
 function capturePi(dir: string): string {
 	const marker = join(dir, "pi-ran");
-	process.env.PI_SUBAGENT_PI_COMMAND = writeExecutable(dir, "capture-pi", `#!/usr/bin/env bash\ntouch '${marker}'\ncat >/dev/null\n`);
+	process.env.PI_SUBAGENT_PI_COMMAND = writeExecutable(
+		dir,
+		"capture-pi",
+		`#!/usr/bin/env bash\nprintf '%s\\n' "$@" > '${marker}'\ncat >/dev/null\n`,
+	);
 	return marker;
+}
+
+/**
+ * The launch the unedited fixture policy authorized for the selective Worker,
+ * with its files in the current agent directory: the launch-time inventory a
+ * later policy edit is checked against.
+ */
+function workerLaunch(): PolicyLaunch {
+	const agentDir = process.env.PI_CODING_AGENT_DIR ?? "";
+	const authorization = authorizeLaunch({
+		policyState: loadCanonicalPolicy(writeCanonicalPolicy()),
+		agent: "pilot-worker",
+		capabilityClass: "implementation",
+		interactionMode: "background",
+		agentDefs: null,
+		now: Date.now(),
+		agentDir,
+	});
+	assert.equal(authorization.status, "authorized");
+	return (authorization as { launch: PolicyLaunch }).launch;
 }
 
 function managedRunning(dir: string, sessionFile: string): RunningSubagent {
@@ -74,6 +105,7 @@ function managedRunning(dir: string, sessionFile: string): RunningSubagent {
 		timeoutWrapUp: { kind: "timeout", seconds: 10, threshold: 80 },
 		modelRef: "openai-codex/gpt-6-sol:medium",
 		routing: EVIDENCE,
+		policyLaunch: workerLaunch(),
 		launchMetadata: {
 			version: 1,
 			timestamp: new Date().toISOString(),
@@ -236,5 +268,69 @@ describe("parent-authorized requests to managed children", () => {
 		await restartSubagentForTimeoutWrapUp(running, { getShellReadyDelayMs: () => 0 });
 
 		assert.ok(running.childProcess);
+	});
+
+	it("relaunches a managed timeout wrap-up with exactly the verified inventory and no discovery", async () => {
+		const dir = createTestDir();
+		const running = managedRunning(dir, sessionIn(dir));
+		running.launchMetadata = {
+			...running.launchMetadata!,
+			extensions: ["/ambient/extension.ts"],
+			skills: "all",
+			flags: "--approve",
+			trustProject: true,
+			noContextFiles: false,
+		};
+		const marker = capturePi(dir);
+
+		await restartSubagentForTimeoutWrapUp(running, { getShellReadyDelayMs: () => 0 });
+		await new Promise((resolve) => running.childProcess?.once("exit", resolve));
+
+		const args = readFileSync(marker, "utf8").trimEnd().split("\n");
+		const agentDir = process.env.PI_CODING_AGENT_DIR ?? "";
+		const resourceFlags = /^(?:-e|--extension|--no-extensions|--skill|--no-skills|--prompt-template|--no-prompt-templates|--theme|--no-themes|--no-context-files|--approve|-a|--no-approve)$/;
+		assert.deepEqual(
+			args.flatMap((arg, index) => (resourceFlags.test(arg) ? (arg === "-e" ? [arg, args[index + 1]] : [arg]) : [])),
+			[
+				"--no-extensions",
+				"-e",
+				COMPLETION_HELPER_PATH,
+				"-e",
+				join(agentDir, "extensions/workspace-boundary/index.ts"),
+				"-e",
+				join(agentDir, "extensions/drover-model-routing/index.ts"),
+				"--no-skills",
+				"--no-prompt-templates",
+				"--no-themes",
+				"--no-context-files",
+				"--no-approve",
+			],
+		);
+	});
+
+	it("blocks a managed timeout wrap-up whose catalogued files changed since launch", async () => {
+		const dir = createTestDir();
+		const running = managedRunning(dir, sessionIn(dir));
+		appendFileSync(join(process.env.PI_CODING_AGENT_DIR ?? "", "extensions/workspace-boundary/index.ts"), "// drift\n");
+		const marker = capturePi(dir);
+
+		await assert.rejects(
+			() => restartSubagentForTimeoutWrapUp(running, { getShellReadyDelayMs: () => 0 }),
+			/Routing policy blocked the request.*workspace-boundary/,
+		);
+		assert.equal(existsSync(marker), false);
+	});
+
+	it("blocks a managed timeout wrap-up that lost its verified inventory", async () => {
+		const dir = createTestDir();
+		const running = managedRunning(dir, sessionIn(dir));
+		running.policyLaunch = undefined;
+		const marker = capturePi(dir);
+
+		await assert.rejects(
+			() => restartSubagentForTimeoutWrapUp(running, { getShellReadyDelayMs: () => 0 }),
+			/Routing policy blocked the request.*inventory/,
+		);
+		assert.equal(existsSync(marker), false);
 	});
 });

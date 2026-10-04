@@ -194,3 +194,42 @@ test("rejects a child role that uses the all-Skills grant", () => {
 		/Role worker is a child role and cannot use the all-Skills grant controller/,
 	);
 });
+
+test("rejects a pilot role whose resource grant enables Skills or project resources", () => {
+	assert.match(
+		invalidReason((policy) => {
+			policy.resourceGrants.reviewing = { skills: ["review"], projectResources: false };
+			policy.roles.scout.resourceGrant = "reviewing";
+			policy.pilotCases = {};
+		}),
+		/Role scout is a pilot role and cannot use resource grant reviewing, which enables Skills or project resources/,
+	);
+	assert.match(
+		invalidReason((policy) => {
+			policy.resourceGrants.project = { skills: [], projectResources: true };
+			policy.roles.scout.resourceGrant = "project";
+			policy.pilotCases = {};
+		}),
+		/Role scout is a pilot role and cannot use resource grant project/,
+	);
+});
+
+test("rejects a granted extension whose catalog source is a Git commit rather than a local file", () => {
+	assert.match(
+		invalidReason((policy) => {
+			policy.extensionCatalog.remote = {
+				source: "git:github.com/example/remote-extension@04ce06169928d1af9b83c3de4ded2c6bb2e271c1",
+				files: [{ path: "index.ts", sha256: "d".repeat(64) }],
+			};
+			policy.extensionGrants.worker = ["drover-model-routing", "remote"];
+		}),
+		/extensionGrants.worker must not grant remote, whose catalog source is a Git commit rather than a verified local file/,
+	);
+});
+
+test("a pilot-state controller keeps its all-Skills grant, since it never runs as a child", () => {
+	const document = canonicalPolicyDocument();
+	document.roles.controller.state = "pilot";
+
+	assert.equal(loadCanonicalPolicy(writeCanonicalPolicy(document)).status, "loaded");
+});

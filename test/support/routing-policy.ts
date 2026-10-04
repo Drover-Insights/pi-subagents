@@ -1,6 +1,8 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { after } from "node:test";
 
 const createdAgentDirs: string[] = [];
@@ -15,6 +17,23 @@ export function emptyAgentDir(): string {
 	createdAgentDirs.push(agentDir);
 	return agentDir;
 }
+
+function sha256(content: string | Buffer): string {
+	return createHash("sha256").update(content).digest("hex");
+}
+
+/** This package's completion helper, the file the launcher loads into every managed child. */
+export const COMPLETION_HELPER_PATH = fileURLToPath(new URL("../../src/tools/subagent-done.ts", import.meta.url));
+
+/**
+ * The pi-config extension files the fixture catalogs. `writeCanonicalPolicy`
+ * writes each under the agent directory so their sha256 pins verify.
+ */
+export const FIXTURE_EXTENSION_FILES: Readonly<Record<string, string>> = {
+	"extensions/workspace-boundary/index.ts": "export default function workspaceBoundary() {}\n",
+	"extensions/drover-model-routing/index.ts": "export default function droverModelRouting() {}\n",
+	"extensions/drover-model-routing/policy.ts": "export const policy = {};\n",
+};
 
 /** Mutable JSON shape of the canonical policy fixture; tests edit a fresh copy. */
 // biome-ignore lint/suspicious/noExplicitAny: fixture documents are edited freely to build invalid variants.
@@ -143,19 +162,30 @@ export function canonicalPolicyDocument(): PolicyDocument {
 				files: [
 					{
 						path: "src/tools/subagent-done.ts",
-						sha256: "7dafab8303209e430bd95bc9a45a66b0063ec5f41e3eba724909887bb0852b5a",
+						sha256: sha256(readFileSync(COMPLETION_HELPER_PATH)),
 					},
 				],
 			},
 			"workspace-boundary": {
 				source: "pi-config",
-				files: [{ path: "extensions/workspace-boundary/index.ts", sha256: "a".repeat(64) }],
+				files: [
+					{
+						path: "extensions/workspace-boundary/index.ts",
+						sha256: sha256(FIXTURE_EXTENSION_FILES["extensions/workspace-boundary/index.ts"]),
+					},
+				],
 			},
 			"drover-model-routing": {
 				source: "pi-config",
 				files: [
-					{ path: "extensions/drover-model-routing/index.ts", sha256: "b".repeat(64) },
-					{ path: "extensions/drover-model-routing/policy.ts", sha256: "c".repeat(64) },
+					{
+						path: "extensions/drover-model-routing/index.ts",
+						sha256: sha256(FIXTURE_EXTENSION_FILES["extensions/drover-model-routing/index.ts"]),
+					},
+					{
+						path: "extensions/drover-model-routing/policy.ts",
+						sha256: sha256(FIXTURE_EXTENSION_FILES["extensions/drover-model-routing/policy.ts"]),
+					},
 				],
 			},
 		},
@@ -177,9 +207,21 @@ export function canonicalPolicyDocument(): PolicyDocument {
 	};
 }
 
-/** Create a temp Pi agent directory holding `document` as its canonical policy. */
+/**
+ * Create a temp Pi agent directory holding `document` as its canonical policy,
+ * the catalogued pi-config extension files, and a `models.json` defining the
+ * fixture's non-built-in `claude-primary` provider.
+ */
 export function writeCanonicalPolicy(document: PolicyDocument | string = canonicalPolicyDocument()): string {
 	const agentDir = emptyAgentDir();
+	for (const [path, content] of Object.entries(FIXTURE_EXTENSION_FILES)) {
+		mkdirSync(dirname(join(agentDir, path)), { recursive: true });
+		writeFileSync(join(agentDir, path), content);
+	}
+	writeFileSync(
+		join(agentDir, "models.json"),
+		JSON.stringify({ providers: { "claude-primary": { baseUrl: "http://127.0.0.1:9", api: "anthropic-messages" } } }),
+	);
 	writeFileSync(
 		join(agentDir, "drover-model-routing.json"),
 		typeof document === "string" ? document : JSON.stringify(document, null, 2),
