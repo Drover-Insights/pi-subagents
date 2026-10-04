@@ -559,6 +559,9 @@ export function getBaseSubagentEnvVars(
 	envVars[PI_SUBAGENT_TIMEOUT_WARN_THRESHOLD] = prepared.agentDefs?.timeoutWarnThreshold ?? "";
 	envVars.PI_SUBAGENT_NAME = params.name;
 	envVars.PI_SUBAGENT_AGENT = params.agent ?? "";
+	// Only a task-less background resume sets this; an ordinary launch always
+	// prompts, so an inherited value must not reach the child.
+	envVars.PI_SUBAGENT_RESUME_WITHOUT_TASK = "";
 	const spawnPolicy = prepared.spawnPolicy ?? resolvePreparedSpawnPolicy(params, prepared.agentDefs);
 	envVars.PI_SUBAGENT_SPAWN_BUDGET = String(spawnPolicy.childBudget ?? 0);
 	envVars.PI_SUBAGENT_SPAWN_WIDTH_EFFECTIVE =
