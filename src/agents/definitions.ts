@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { loadCanonicalPolicy } from "../routing/canonical-policy.ts";
 import { normalizeVerifierModelRef } from "../vf/model-ref.ts";
 
@@ -81,7 +81,7 @@ export interface ResolvedAgentDefinition extends AgentDefaults {
 }
 
 export function getAgentConfigDir(): string {
-	return process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
+	return getAgentDir();
 }
 
 function parseAgentDefinition(

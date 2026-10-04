@@ -41,6 +41,8 @@ import {
 	writeSubagentLaunchMetadataEntryForTest,
 	writeSubagentModelStateEntriesForTest,
 } from "../support/index.ts";
+import { homedir } from "node:os";
+import { getAgentConfigDir } from "../../src/agents/definitions.ts";
 import { isHeadlessLaunchSession } from "../../src/tools/subagent-tools.ts";
 
 describe("agent launch configuration", () => {
@@ -51,6 +53,19 @@ describe("agent launch configuration", () => {
 	it("uses PI_CODING_AGENT_DIR for the global agent config root", () => {
 		process.env.PI_CODING_AGENT_DIR = "/tmp/custom-agent-root";
 		assert.equal(getAgentConfigDirForTest(), "/tmp/custom-agent-root");
+	});
+
+	it("expands a leading tilde in PI_CODING_AGENT_DIR like Pi does", () => {
+		process.env.PI_CODING_AGENT_DIR = "~/custom-agent-root";
+		assert.equal(getAgentConfigDir(), join(homedir(), "custom-agent-root"));
+		process.env.PI_CODING_AGENT_DIR = "~";
+		assert.equal(getAgentConfigDir(), homedir());
+		if (process.platform !== "win32") {
+			process.env.PI_CODING_AGENT_DIR = "~\\custom-agent-root";
+			assert.equal(getAgentConfigDir(), "~\\custom-agent-root");
+		}
+		process.env.PI_CODING_AGENT_DIR = "";
+		assert.equal(getAgentConfigDir(), join(homedir(), ".pi", "agent"));
 	});
 
 	it("parses trust-project frontmatter", () => {
