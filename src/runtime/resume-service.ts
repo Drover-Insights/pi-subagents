@@ -5,7 +5,6 @@ import { fileURLToPath } from "node:url";
 import { getAgentConfigDir, loadAgentDefaults as loadAgentDefaultsFromDefinitions } from "../agents/definitions.ts";
 import { loadCanonicalPolicy } from "../routing/canonical-policy.ts";
 import { checkResumeRequest } from "../routing/launch-authorization.ts";
-import { assertModelAllowed, buildModelRef, splitModelRef } from "../agents/model-refs.ts";
 import { getArtifactStorageRoot } from "../artifact-storage.ts";
 import { buildAppendSystemInheritancePlan } from "../launch/append-system.ts";
 import { getPiInvocation, getSubagentChildProcessEnv } from "../launch/child-command.ts";
@@ -18,17 +17,23 @@ import {
 	getExtensionLaunchArgs,
 	getPersistedPromptLaunchArgs,
 	getPersistedSessionParityArgs,
-	normalizeModelRef,
-	resolveAvailableModelRef,
 } from "../launch/prep.ts";
 import { writeResumeTaskArtifact } from "../launch/prompt-artifacts.ts";
+import {
+	mergeResumeInvocationMetadata,
+	type ResumeModelRegistry,
+	resolveResumeLaunchMetadataForInvocation,
+} from "../launch/resume-invocation.ts";
 import {
 	buildResumePiArgs,
 	getResumeCwd,
 	getResumeDefinitionCwd,
+	getResumeLaunchMetadata,
 	resolveResumeLaunchMetadata,
 } from "../launch/resume.ts";
 import { expandSubagentTask } from "../launch/task-expansion.ts";
+import type { TrustedResumeRejection } from "../trusted-launch/contract.ts";
+import { type TrustedResumeExpectation, validateTrustedResumeAuthority } from "../trusted-launch/resume-authority.ts";
 import { resolveSubagentCwd } from "../launch/runtime-paths.ts";
 import { buildInteractiveShellCommand } from "../launch/shell-command.ts";
 import { createZellijCommandSurface } from "../mux/zellij-placement.ts";
@@ -50,6 +55,7 @@ import {
 	type PersistedSubagentLaunchMetadata,
 	readSubagentExtensionEntry,
 	readSubagentLaunchMetadataEntries,
+	scanLaunchMetadataLines,
 	writeSubagentLaunchMetadataEntry,
 	writeSubagentModelStateEntries,
 } from "../session/session-files.ts";
@@ -86,14 +92,17 @@ export interface ResumeServiceRuntime {
 	startWidgetRefresh(): void;
 	getContextWindow(modelRef: string | undefined): number | undefined;
 	runningSubagents: Map<string, RunningSubagent>;
-	modelRegistry?: {
-		getAvailable(): Array<{
-			provider: string;
-			id: string;
-			reasoning?: boolean;
-			thinkingLevelMap?: Record<string, string | null | undefined>;
-		}>;
-	};
+	modelRegistry?: ResumeModelRegistry;
+}
+
+/** A resume refused before any child process or surface was created. */
+export class ResumeRefusal extends Error {
+	readonly reason: TrustedResumeRejection | "trusted_session";
+	constructor(reason: TrustedResumeRejection | "trusted_session", message: string) {
+		super(message);
+		this.name = "ResumeRefusal";
+		this.reason = reason;
+	}
 }
 
 export interface ResumeSessionInput {
@@ -104,16 +113,12 @@ export interface ResumeSessionInput {
 	mode?: "interactive" | "background";
 	model?: string;
 	thinking?: string;
-}
-
-function splitResumeModelRef(
-	model: string,
-	fallbackThinking: string | undefined,
-): { model: string; thinking: string | undefined; explicitThinking: boolean } {
-	const split = splitModelRef(model);
-	return split.thinking === undefined
-		? { model, thinking: fallbackThinking, explicitThinking: false }
-		: { model: split.model, thinking: split.thinking, explicitThinking: true };
+	/**
+	 * Set only by the trusted extension seam. The resume then runs from the
+	 * session's revalidated trusted launch authority alone, ignoring every
+	 * other caller field except `task`.
+	 */
+	trusted?: TrustedResumeExpectation;
 }
 
 export function resolveResumeHerdrPlacementPolicy(
@@ -136,69 +141,6 @@ export function resolveResumeZellijPlacementPolicy(
 	return launchMetadata?.zellijPlacementPolicy;
 }
 
-export function resolveResumeLaunchMetadataForInvocation(
-	launchMetadata: PersistedSubagentLaunchMetadata | undefined,
-	requestedModel: string | undefined,
-	requestedThinking?: string,
-	modelRegistry?: ResumeServiceRuntime["modelRegistry"],
-): PersistedSubagentLaunchMetadata | undefined {
-	if (!launchMetadata || (!requestedModel && !requestedThinking)) return launchMetadata;
-	if (launchMetadata.allowModelOverride === false) {
-		return {
-			...launchMetadata,
-			...(requestedModel ? { ignoredModelOverride: requestedModel } : {}),
-			...(requestedThinking ? { ignoredThinkingOverride: requestedThinking } : {}),
-		};
-	}
-	const baseModel = requestedModel ?? launchMetadata.modelRef ?? launchMetadata.model;
-	if (!baseModel) {
-		throw new Error("Cannot apply thinking override without a persisted model.");
-	}
-	const requested = splitResumeModelRef(baseModel, requestedThinking ?? launchMetadata.thinking);
-	const explicitThinking = requested.explicitThinking || requestedThinking != null;
-	const resolved = resolveAvailableModelRef(
-		requested.model,
-		requested.thinking,
-		explicitThinking,
-		modelRegistry,
-		launchMetadata.modelRef,
-	);
-	const { effectiveModel, effectiveThinking, effectiveModelRef } = normalizeModelRef(resolved.model, resolved.thinking);
-	const implicitDefaultRef = buildModelRef(launchMetadata.definitionModel, launchMetadata.definitionThinking);
-	const implicitAllowed = implicitDefaultRef
-		? [implicitDefaultRef]
-		: launchMetadata.modelSource === "parent" && launchMetadata.modelRef
-			? [launchMetadata.modelRef]
-			: [];
-	assertModelAllowed(effectiveModelRef, launchMetadata.allowedModels, launchMetadata.name, implicitAllowed);
-	return {
-		...launchMetadata,
-		timestamp: new Date().toISOString(),
-		model: effectiveModel,
-		thinking: effectiveThinking,
-		modelRef: effectiveModelRef,
-		modelSource: "resume-override",
-		...(requestedModel ? { requestedModelOverride: requestedModel } : {}),
-		...(requestedThinking ? { requestedThinkingOverride: requestedThinking } : {}),
-	};
-}
-
-function mergeResumeInvocationMetadata(
-	launchMetadata: PersistedSubagentLaunchMetadata,
-	laterMetadata: PersistedSubagentLaunchMetadata,
-): PersistedSubagentLaunchMetadata {
-	return {
-		...launchMetadata,
-		...laterMetadata,
-		// A child can append metadata to its own session. Keep grant authority
-		// anchored to the first launch entry while allowing later entries to
-		// carry legitimate invocation changes such as model and thinking.
-		spawnBudget: launchMetadata.spawnBudget,
-		spawnableAgents: launchMetadata.spawnableAgents,
-		denyTools: launchMetadata.denyTools,
-	};
-}
-
 /**
  * Shared resume logic used by both the LLM subagent_resume tool and the
  * /subagents TUI overlay. Handles validation, deduplication, environment
@@ -218,7 +160,8 @@ export async function resumeSubagentSession(
 	// work starts a fresh launch against the updated source tree.
 	const verifiedRunDir = process.env.PI_SUBAGENT_VF_RUN_DIR;
 	if (verifiedRunDir && verifiedRunDir.trim()) {
-		throw new Error(
+		throw new ResumeRefusal(
+			"resume_denied",
 			`Session ${input.sessionFile} was one finished attempt of an llm-as-a-verifier run; ` +
 				"its worktree was removed after selection, so it cannot be resumed. " +
 				"Start a new launch of the agent for follow-up work.",
@@ -226,7 +169,8 @@ export async function resumeSubagentSession(
 	}
 	const widthLimit = getSpawnWidthLimit();
 	if (!tryAcquireSlots(1, widthLimit)) {
-		throw new Error(
+		throw new ResumeRefusal(
+			"resume_denied",
 			`Spawn width limit reached (${getLiveSlotCount()}/${widthLimit} slots busy). Wait for a running subagent to finish, or use subagent_kill to free a slot. Interactive children with auto-exit: false keep their slot until the pane closes.`,
 		);
 	}
@@ -252,14 +196,33 @@ async function resumeSubagentSessionWithoutWidth(
 	runtime: ResumeServiceRuntime,
 ): Promise<RunningSubagent> {
 	const { sessionFile, task } = input;
+	// A trusted resume takes everything but its task from the session's
+	// revalidated launch authority, never from the caller.
+	const caller: Omit<ResumeSessionInput, "sessionFile"> = input.trusted ? { task } : input;
 
+	let trusted: { metadata: PersistedSubagentLaunchMetadata; cwd: string } | undefined;
+	if (input.trusted) {
+		const authority = validateTrustedResumeAuthority(sessionFile, input.trusted);
+		if (!authority.ok) throw new ResumeRefusal(authority.reason, authority.message);
+		trusted = authority;
+	}
+	const trustedCwd = trusted?.cwd;
 	if (!existsSync(sessionFile)) {
 		throw new Error(`Session file not found: ${sessionFile}`);
 	}
 
-	const explicitMode = isResumeMode(input.mode) ? input.mode : undefined;
-	const metadata = resolveResumeLaunchMetadata(sessionFile, explicitMode);
-	const launchMetadataEntries = readSubagentLaunchMetadataEntries(sessionFile);
+	// A trusted resume uses exactly the entry it validated, never a re-read.
+	const explicitMode = isResumeMode(caller.mode) ? caller.mode : undefined;
+	const metadata = trusted
+		? getResumeLaunchMetadata(trusted.metadata)
+		: resolveResumeLaunchMetadata(sessionFile, explicitMode);
+	const launchMetadataEntries = trusted ? [trusted.metadata] : readSubagentLaunchMetadataEntries(sessionFile);
+	if (!trusted && scanLaunchMetadataLines(sessionFile).trusted) {
+		throw new ResumeRefusal(
+			"trusted_session",
+			`Session ${sessionFile} was launched by a trusted extension; only that extension can resume it.`,
+		);
+	}
 	const launchMetadata = launchMetadataEntries[0];
 	const latestLaunchMetadata = launchMetadataEntries[launchMetadataEntries.length - 1];
 	const invocationMetadataSource =
@@ -268,8 +231,8 @@ async function resumeSubagentSessionWithoutWidth(
 			: launchMetadata;
 	const invocationMetadata = resolveResumeLaunchMetadataForInvocation(
 		invocationMetadataSource,
-		input.model,
-		input.thinking,
+		caller.model,
+		caller.thinking,
 		runtime.modelRegistry,
 	);
 	const resumedAutoExit = metadata.mode === "background" ? true : invocationMetadata?.autoExit ?? metadata.autoExit ?? true;
@@ -278,9 +241,9 @@ async function resumeSubagentSessionWithoutWidth(
 			? { ...invocationMetadata, autoExit: resumedAutoExit }
 			: invocationMetadata;
 	const shouldPersistInvocationMetadata = invocationMetadata && invocationMetadata !== invocationMetadataSource;
-	const targetAgent = launchMetadata?.agent ?? metadata.agent ?? input.agent;
+	const targetAgent = launchMetadata?.agent ?? metadata.agent ?? caller.agent;
 	const resumeBlocked = checkResumeRequest(loadCanonicalPolicy(getAgentConfigDir()), targetAgent);
-	if (resumeBlocked) throw new Error(`Routing policy blocked the request: ${resumeBlocked}.`);
+	if (resumeBlocked) throw new ResumeRefusal("resume_denied", `Routing policy blocked the request: ${resumeBlocked}.`);
 	const definitionMetadata = launchMetadata ?? invocationMetadataSource;
 	const targetCwd = definitionMetadata ? getResumeDefinitionCwd(definitionMetadata) : process.cwd();
 	const targetDefs = targetAgent
@@ -302,7 +265,7 @@ async function resumeSubagentSessionWithoutWidth(
 		envWidthCeiling: callerEnv.envWidthCeiling,
 	});
 	if (!spawnPolicy.allowed) {
-		throw new Error(`Error: ${spawnPolicy.reason ?? "Spawn policy denied this target."}`);
+		throw new ResumeRefusal("resume_denied", `Error: ${spawnPolicy.reason ?? "Spawn policy denied this target."}`);
 	}
 	const narrowedSpawnBudget = narrowSpawnBudget(
 		launchMetadata,
@@ -310,18 +273,19 @@ async function resumeSubagentSessionWithoutWidth(
 		callerEnv.envDepthCeiling,
 	);
 	const resumeSpawnEnv = buildResumeSpawnEnv(launchMetadata, narrowedSpawnBudget, spawnPolicy.effectiveWidth);
-	const name = invocationMetadata?.name ?? metadata.name ?? input.name ?? "Resume";
-	const displayName = input.name ?? name;
+	const name = invocationMetadata?.name ?? metadata.name ?? caller.name ?? "Resume";
+	const displayName = caller.name ?? name;
 
 	if (metadata.mode === "interactive" && !runtime.isMuxAvailable()) {
-		throw new Error(`Subagents require a supported terminal multiplexer. ${muxSetupHint()}`);
+		throw new ResumeRefusal("resume_denied", `Subagents require a supported terminal multiplexer. ${muxSetupHint()}`);
 	}
 
 	// Guard: reject duplicate resume of the same session file
 	const normalizedFile = resolve(sessionFile);
 	for (const existing of runtime.runningSubagents.values()) {
 		if (existing.sessionFile && resolve(existing.sessionFile) === normalizedFile) {
-			throw new Error(
+			throw new ResumeRefusal(
+				"resume_denied",
 				`Session "${existing.name}" (${existing.agent ?? "subagent"}) is already running with id ${existing.id}. ` +
 					"Use subagent_kill first or wait for it to complete.",
 			);
@@ -349,7 +313,7 @@ async function resumeSubagentSessionWithoutWidth(
 		...(await getPersistedSessionParityArgs(invocationMetadata, metadata.mode, narrowedSpawnBudget > 0)),
 		...(invocationMetadata ? [] : ["--no-approve"]),
 	];
-	const resumeCwd = getResumeCwd(invocationMetadata);
+	const resumeCwd = trustedCwd ?? getResumeCwd(invocationMetadata);
 	const expandedTask = task
 		? await expandSubagentTask(task, {
 				enabled: invocationMetadata?.taskExpansion === "shell",
@@ -357,7 +321,7 @@ async function resumeSubagentSessionWithoutWidth(
 			})
 		: undefined;
 
-	const resumedAgent = invocationMetadata?.agent ?? metadata.agent ?? input.agent;
+	const resumedAgent = invocationMetadata?.agent ?? metadata.agent ?? caller.agent;
 
 	const resumeEnvVars: Record<string, string> = {};
 	// Restore user-configured env vars from the original launch FIRST,

@@ -107,3 +107,6 @@ import "./trusted-launch/registry.test.ts";
 import "./trusted-launch/launcher.test.ts";
 import "./trusted-launch/extension-wiring.test.ts";
 import "./trusted-launch/fake.test.ts";
+import "./trusted-launch/resume-authority.test.ts";
+import "./runtime/resume-trusted-authority.test.ts";
+import "./trusted-launch/resume.test.ts";

@@ -937,14 +937,32 @@ const result = await resolved.descriptor.launch({
 });
 ```
 
-- The request must be a plain object of own data properties (no proxies, getters, or inherited fields). `effectiveCwd` must be absolute, canonical (equal to its realpath), and an existing directory. The child process, its session header, and its launch metadata `cwd` all use it. Agent definitions and skills still resolve from the parent's directory, recorded as `blueprintCwd`, and a resume uses the same split.
+- The request must be a plain object of own data properties (no proxies, getters, or inherited fields). `effectiveCwd` must be absolute, canonical (equal to its realpath), and an existing directory this process can read and search. The child process, its session header, and its launch metadata `cwd` all use it. Agent definitions and skills still resolve from the parent's directory, recorded as `blueprintCwd`, and a resume uses the same split.
 - `mode` is checked against the mode the agent definition launches in here; it never overrides it. Launches are asynchronous only, so blocking agents and sessions that await every launch are refused.
 - Agents with `llm-as-verifier`, a definition `cwd`, `task-expansion: shell`, or `no-session: true` are refused.
 - The launch passes the same name, spawn-policy, routing-policy, spawn-width, and pilot-attempt checks as a `subagent` call. Pass `capabilityClass` and `pilotCase` for managed roles.
 - `labels` (at most 16; keys match `^[a-z][A-Za-z0-9_.-]{0,63}$`, values are strings of at most 256 characters) are stored with the descriptor version, generation, and `requestId` in the child's launch metadata under `trustedLaunch`.
 - The result is `launched` with the runtime id, session file, and recorded directory; `not_started` with a reason when nothing was created; or `unknown` when the launch began and its result is incomplete. A child recorded in another directory, or one that finished launching after its session retired the descriptor, is sent a stop request and reported `unknown`; the message says whether the request failed, and a successful request does not confirm termination. `launch` never throws.
 
-Downstream tests can use `createFakeTrustedSubagents` from `pi-subagents/trusted-launch/fake`. It publishes through the same registry and request validation and creates no process, session, or surface. Dispose it after each test, or the real descriptor cannot publish.
+A trusted child is resumed only through the descriptor, never through `subagent_resume` or the `/subagents` overlay, which refuse it:
+
+```ts
+const resumed = await resolved.descriptor.resume({
+	requestVersion: TRUSTED_LAUNCH_VERSION,
+	requestId: "op_02",
+	sessionFile: result.sessionFile,
+	effectiveCwd: result.effectiveCwd,
+	launchRequestId: "op_01",
+	task: "Continue",
+});
+```
+
+- Everything but `task` comes from the session's single launch metadata entry: agent, name, mode, model, and the directory. `effectiveCwd` and `launchRequestId` are checked against it, never used to choose. The request takes no model, thinking, name, or mode.
+- Before any process or surface exists, the resume refuses a session with no trusted provenance, provenance from an unsupported descriptor version, a session file named through a symlink, a different launch request, a later launch metadata entry or a line that cannot be read, a session its agent's `on-timeout: block-resume` stopped, a session header recorded elsewhere, or a persisted directory that is now missing or moved, not a directory, not canonical (including a symlink swapped in), or no longer readable and searchable.
+- A descriptor from a later session or `/reload` can resume a child an earlier one launched; a disposed or replaced descriptor cannot. The original provenance is returned unchanged as `launch`.
+- Resumes are asynchronous only, as launches are. The result is `resumed`, `not_started` with a reason, or `unknown`, as for a launch. `resume` never throws.
+
+Downstream tests can use `createFakeTrustedSubagents` from `pi-subagents/trusted-launch/fake`. It publishes through the same registry and request validation and creates no process, session, or surface. It resumes only sessions it launched, for the same launch request and a directory that still passes the launch checks. Dispose it after each test, or the real descriptor cannot publish.
 
 These entrypoints are TypeScript sources. Pi's extension loader imports them directly; plain Node refuses TypeScript under `node_modules`, so a test runner needs a TypeScript-capable loader or a linked install.
 

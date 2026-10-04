@@ -92,20 +92,23 @@ function getParentSessionFileFromChildSession(sessionFile: string): string | nul
 	return null;
 }
 
+/** The resume settings a persisted launch metadata entry records. */
+export function getResumeLaunchMetadata(launchMetadata: PersistedSubagentLaunchMetadata): ResumeLaunchMetadata {
+	return {
+		mode: launchMetadata.mode,
+		modeSource: "metadata",
+		agent: launchMetadata.agent,
+		name: launchMetadata.name,
+		autoExit: launchMetadata.autoExit,
+		parentClosePolicy: launchMetadata.parentClosePolicy,
+		blocking: launchMetadata.blocking,
+		async: launchMetadata.async,
+	};
+}
+
 export function resolveResumeLaunchMetadata(sessionFile: string, explicitMode?: ResumeMode): ResumeLaunchMetadata {
 	const launchMetadata = readSubagentLaunchMetadata(sessionFile);
-	if (launchMetadata) {
-		return {
-			mode: launchMetadata.mode,
-			modeSource: "metadata",
-			agent: launchMetadata.agent,
-			name: launchMetadata.name,
-			autoExit: launchMetadata.autoExit,
-			parentClosePolicy: launchMetadata.parentClosePolicy,
-			blocking: launchMetadata.blocking,
-			async: launchMetadata.async,
-		};
-	}
+	if (launchMetadata) return getResumeLaunchMetadata(launchMetadata);
 	try {
 		for (const entry of getEntries(sessionFile)) {
 			const direct = findLaunchMetadataInValue(entry, sessionFile);

@@ -5,6 +5,10 @@
  * rather than in module state.
  */
 
+import type { TrustedLaunchProvenance } from "../types.ts";
+
+export type { TrustedLaunchProvenance };
+
 export const TRUSTED_LAUNCH_REGISTRY_KEY = Symbol.for("drover.pi-subagents.trusted-launch");
 export const TRUSTED_LAUNCH_VERSION = "pi-subagents.trusted-launch/v1" as const;
 
@@ -46,6 +50,26 @@ export type TrustedLaunchRejection =
 	| "spawn_width"
 	| "pilot_attempts_unavailable";
 
+/** Why a trusted resume created nothing. */
+export type TrustedResumeRejection =
+	| "descriptor_disposed"
+	| "descriptor_replaced"
+	| "unsupported_version"
+	| "invalid_request"
+	| "session_not_found"
+	| "not_trusted"
+	| "unsupported_provenance"
+	| "launch_request_mismatch"
+	| "metadata_divergent"
+	| "session_identity_mismatch"
+	| "effective_cwd_invalid"
+	| "effective_cwd_missing"
+	| "effective_cwd_noncanonical"
+	| "effective_cwd_revoked"
+	| "effective_cwd_mismatch"
+	| "synchronous_launch"
+	| "resume_denied";
+
 export type TrustedLaunchResultV1 =
 	| {
 			outcome: "launched";
@@ -64,6 +88,43 @@ export type TrustedLaunchResultV1 =
 	/** Launch began and its result is incomplete; a child may exist. */
 	| { outcome: "unknown"; reason: string; message: string; partial?: { runId?: string; sessionFile?: string } };
 
+/**
+ * Resume a child this seam launched. Everything but the follow-up task comes
+ * from the session's persisted launch authority, revalidated before any child
+ * exists; the caller's fields are assertions against it, never overrides.
+ */
+export interface TrustedResumeRequestV1 {
+	readonly requestVersion: typeof TRUSTED_LAUNCH_VERSION;
+	/** This resume's operation identity; same rule as a launch `requestId`. */
+	readonly requestId: string;
+	/** Absolute session file a `launched` result returned. */
+	readonly sessionFile: string;
+	/** The `effectiveCwd` the `launched` result returned. */
+	readonly effectiveCwd: string;
+	/** The `requestId` of the launch that created the session. */
+	readonly launchRequestId: string;
+	/** Follow-up task for the resumed child. */
+	readonly task?: string;
+}
+
+export type TrustedResumeResultV1 =
+	| {
+			outcome: "resumed";
+			requestId: string;
+			runId: string;
+			sessionFile: string;
+			mode: TrustedLaunchMode;
+			surfaceId?: string;
+			/** The persisted directory the child resumed in. */
+			effectiveCwd: string;
+			/** The original launch's provenance, unchanged by the resume. */
+			launch: TrustedLaunchProvenance;
+	  }
+	/** Proven: no process, session, or surface was created. */
+	| { outcome: "not_started"; reason: TrustedResumeRejection; message: string }
+	/** Resume began and its result is incomplete; a child may exist. */
+	| { outcome: "unknown"; reason: string; message: string; partial?: { runId?: string; sessionFile?: string } };
+
 export interface TrustedSubagentsDescriptor {
 	readonly version: typeof TRUSTED_LAUNCH_VERSION;
 	/** Unique per publication; a reload publishes a new generation. */
@@ -72,6 +133,8 @@ export interface TrustedSubagentsDescriptor {
 	isLive(): boolean;
 	/** Never throws. Validates the request before any effect. */
 	launch(request: unknown): Promise<TrustedLaunchResultV1>;
+	/** Never throws. Validates the request and the persisted authority before any effect. */
+	resume(request: unknown): Promise<TrustedResumeResultV1>;
 }
 
 export type TrustedSubagentsResolution =

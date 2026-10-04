@@ -64,7 +64,7 @@ import {
 	clearPublishedRunningSubagentCountForTest,
 	publishRunningSubagentCount,
 } from "../runtime/nested-lifecycle.ts";
-import { resolveResumeLaunchMetadataForInvocation } from "../runtime/resume-service.ts";
+import { resolveResumeLaunchMetadataForInvocation } from "../launch/resume-invocation.ts";
 import { ChildSessionStorage } from "../session/child-session-storage.ts";
 import {
 	buildPiPromptArgs,

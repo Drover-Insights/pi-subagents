@@ -1,8 +1,14 @@
-import { realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { types } from "node:util";
 import { getSubagentNameError } from "../agents/titles.ts";
-import { TRUSTED_LAUNCH_VERSION, type TrustedLaunchRejection, type TrustedLaunchRequestV1 } from "./contract.ts";
+import {
+	TRUSTED_LAUNCH_VERSION,
+	type TrustedLaunchRejection,
+	type TrustedLaunchRequestV1,
+	type TrustedResumeRejection,
+	type TrustedResumeRequestV1,
+} from "./contract.ts";
+import { getEffectiveCwdError } from "./effective-cwd.ts";
 
 const REQUIRED_STRING_KEYS = ["requestId", "agent", "name", "title", "task", "effectiveCwd"] as const;
 const OPTIONAL_STRING_KEYS = ["capabilityClass", "pilotCase"] as const;
@@ -28,15 +34,6 @@ function reject(reason: TrustedLaunchRejection, message: string): TrustedRequest
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isCanonicalDirectory(path: string): boolean {
-	if (!isAbsolute(path)) return false;
-	try {
-		return realpathSync(path) === path && statSync(path).isDirectory();
-	} catch {
-		return false;
-	}
 }
 
 function getLabelsError(labels: unknown): string | null {
@@ -121,12 +118,49 @@ export function validateTrustedLaunchRequest(raw: unknown): TrustedRequestValida
 	}
 	const labelsError = getLabelsError(input.labels);
 	if (labelsError) return reject("invalid_request", labelsError);
-	if (!isCanonicalDirectory(request.effectiveCwd)) {
+	if (getEffectiveCwdError(request.effectiveCwd)) {
 		return reject(
 			"effective_cwd_invalid",
-			`effectiveCwd ${JSON.stringify(request.effectiveCwd)} must be an absolute, canonical, existing directory.`,
+			`effectiveCwd ${JSON.stringify(request.effectiveCwd)} must be an absolute, canonical, existing, accessible directory.`,
 		);
 	}
 	if (request.labels) Object.freeze(request.labels);
+	return { ok: true, request: Object.freeze(request) };
+}
+
+const RESUME_KEYS = new Set<string>(["requestVersion", "requestId", "sessionFile", "effectiveCwd", "launchRequestId", "task"]);
+
+export type TrustedResumeRequestValidation =
+	| { ok: true; request: TrustedResumeRequestV1 }
+	| { ok: false; reason: TrustedResumeRejection; message: string };
+
+/**
+ * Validate the shape of a trusted resume request before any effect. The
+ * session's own authority is checked later, against what it persisted.
+ * Never throws; the returned request is a frozen snapshot.
+ */
+export function validateTrustedResumeRequest(raw: unknown): TrustedResumeRequestValidation {
+	const invalid = (message: string): TrustedResumeRequestValidation => ({ ok: false, reason: "invalid_request", message });
+	const input = snapshotPlainData(raw);
+	if (!input) return invalid("The request must be a plain object of data properties.");
+	if (input.requestVersion !== TRUSTED_LAUNCH_VERSION) {
+		return {
+			ok: false,
+			reason: "unsupported_version",
+			message: `Unsupported request version; expected ${TRUSTED_LAUNCH_VERSION}.`,
+		};
+	}
+	const unknownKeys = Object.keys(input).filter((key) => !RESUME_KEYS.has(key));
+	if (unknownKeys.length > 0) return invalid(`Unknown request keys: ${unknownKeys.join(", ")}.`);
+	for (const key of ["requestId", "sessionFile", "effectiveCwd", "launchRequestId"] as const) {
+		if (typeof input[key] !== "string" || input[key] === "") return invalid(`${key} must be a non-empty string.`);
+	}
+	if (input.task !== undefined && (typeof input.task !== "string" || input.task === "")) {
+		return invalid("task must be a non-empty string when present.");
+	}
+	const request = input as unknown as TrustedResumeRequestV1;
+	if (!REQUEST_ID.test(request.requestId)) return invalid("requestId is malformed.");
+	if (!REQUEST_ID.test(request.launchRequestId)) return invalid("launchRequestId is malformed.");
+	if (!isAbsolute(request.sessionFile)) return invalid("sessionFile must be absolute.");
 	return { ok: true, request: Object.freeze(request) };
 }

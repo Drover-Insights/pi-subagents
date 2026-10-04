@@ -20,6 +20,7 @@ import {
 	requestSubagentBatchStopForTest,
 	subagentsExtension,
 } from "../support/index.ts";
+import { trustedSessionFixture } from "../support/trusted-sessions.ts";
 
 type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
 
@@ -105,6 +106,27 @@ describe("trusted launch descriptor lifecycle", () => {
 		assert.equal(descriptor.isLive(), false);
 		const result = await descriptor.launch(launchRequest());
 		assert.equal(result.outcome === "not_started" && result.reason, "descriptor_disposed");
+	});
+
+	it("publishes a resume that refuses once the session retires the descriptor", async () => {
+		const extension = loadExtension();
+		await extension.fire("session_start", { reason: "startup" });
+		const descriptor = current();
+		assert.ok(descriptor);
+		const fixture = trustedSessionFixture();
+		const resume = {
+			requestVersion: TRUSTED_LAUNCH_VERSION,
+			requestId: "op_resume_01",
+			sessionFile: fixture.sessionFile,
+			effectiveCwd: createTestDir(),
+			launchRequestId: fixture.provenance.requestId,
+		};
+		const live = await descriptor.resume(resume);
+		assert.equal(live.outcome, "not_started");
+
+		await extension.fire("session_shutdown", { reason: "quit" });
+		const retired = await descriptor.resume(resume);
+		assert.equal(retired.outcome === "not_started" && retired.reason, "descriptor_disposed");
 	});
 
 	it("keeps the descriptor through the coordinator-only turn stop", async () => {

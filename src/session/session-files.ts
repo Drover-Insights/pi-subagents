@@ -357,6 +357,39 @@ export function readSubagentLaunchMetadataEntries(path: string): PersistedSubage
 	return metadata;
 }
 
+export interface LaunchMetadataScan {
+	/** Lines whose top-level `customType` is the launch metadata type, whatever their payload. */
+	launchEntries: number;
+	/** Whether any of those lines carries trusted launch provenance. */
+	trusted: boolean;
+	/** Non-empty lines that are not JSON. */
+	unreadableLines: number;
+}
+
+/**
+ * Scan every line of the session tolerantly. Unlike the strict entry reader,
+ * a line that does not parse is counted rather than hiding every other line,
+ * and a launch metadata line counts whatever its payload, so a torn, forged,
+ * or escaped line cannot conceal a trusted launch or a later entry.
+ */
+export function scanLaunchMetadataLines(path: string): LaunchMetadataScan {
+	const scan: LaunchMetadataScan = { launchEntries: 0, trusted: false, unreadableLines: 0 };
+	for (const line of readFileSync(path, "utf8").split("\n")) {
+		if (!line.trim()) continue;
+		let entry: { customType?: unknown; data?: { trustedLaunch?: unknown } } | null;
+		try {
+			entry = JSON.parse(line);
+		} catch {
+			scan.unreadableLines++;
+			continue;
+		}
+		if (entry?.customType !== SUBAGENT_LAUNCH_METADATA_CUSTOM_TYPE) continue;
+		scan.launchEntries++;
+		if (entry.data?.trustedLaunch) scan.trusted = true;
+	}
+	return scan;
+}
+
 /**
  * Returns the first valid launch metadata entry, which the parent writes at
  * launch. Later entries can be appended by the child session, so they never
