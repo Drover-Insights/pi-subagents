@@ -913,6 +913,41 @@ The wrapper applies to new children and resumed children. Quoted paths work:
 PI_SUBAGENT_PI_COMMAND="'/path with spaces/my-wrapper' pi" pi
 ```
 
+## Launching children from a trusted extension
+
+Another extension in the same Pi process can launch a child in a directory it chooses, through the same coordinator as the `subagent` tool. The model cannot reach this path: it has no tool, and the internal directory and provenance fields are stripped from `subagent` tool input.
+
+While a session runs with the `subagent` tool, the package publishes one descriptor under `Symbol.for("drover.pi-subagents.trusted-launch")`. A new session or `/reload` publishes a new generation, and a descriptor from a retired session refuses to launch. When any descriptor already holds the slot, such as another pi-subagents instance or an undisposed fake, this one publishes nothing. Resolve it by version:
+
+```ts
+import { resolveTrustedSubagents, TRUSTED_LAUNCH_VERSION } from "pi-subagents/trusted-launch";
+
+const resolved = resolveTrustedSubagents(TRUSTED_LAUNCH_VERSION);
+if (resolved.status !== "ok") throw new Error(`pi-subagents trusted launch is ${resolved.status}`);
+const result = await resolved.descriptor.launch({
+	requestVersion: TRUSTED_LAUNCH_VERSION,
+	requestId: "op_01",
+	agent: "worker",
+	name: "task-worker",
+	title: "Task worker",
+	task: "Do the work",
+	effectiveCwd: "/home/me/project",
+	mode: "background",
+	labels: { runId: "run_01" },
+});
+```
+
+- The request must be a plain object of own data properties (no proxies, getters, or inherited fields). `effectiveCwd` must be absolute, canonical (equal to its realpath), and an existing directory. The child process, its session header, and its launch metadata `cwd` all use it. Agent definitions and skills still resolve from the parent's directory, recorded as `blueprintCwd`, and a resume uses the same split.
+- `mode` is checked against the mode the agent definition launches in here; it never overrides it. Launches are asynchronous only, so blocking agents and sessions that await every launch are refused.
+- Agents with `llm-as-verifier`, a definition `cwd`, `task-expansion: shell`, or `no-session: true` are refused.
+- The launch passes the same name, spawn-policy, routing-policy, spawn-width, and pilot-attempt checks as a `subagent` call. Pass `capabilityClass` and `pilotCase` for managed roles.
+- `labels` (at most 16; keys match `^[a-z][A-Za-z0-9_.-]{0,63}$`, values are strings of at most 256 characters) are stored with the descriptor version, generation, and `requestId` in the child's launch metadata under `trustedLaunch`.
+- The result is `launched` with the runtime id, session file, and recorded directory; `not_started` with a reason when nothing was created; or `unknown` when the launch began and its result is incomplete. A child recorded in another directory, or one that finished launching after its session retired the descriptor, is sent a stop request and reported `unknown`; the message says whether the request failed, and a successful request does not confirm termination. `launch` never throws.
+
+Downstream tests can use `createFakeTrustedSubagents` from `pi-subagents/trusted-launch/fake`. It publishes through the same registry and request validation and creates no process, session, or surface. Dispose it after each test, or the real descriptor cannot publish.
+
+These entrypoints are TypeScript sources. Pi's extension loader imports them directly; plain Node refuses TypeScript under `node_modules`, so a test runner needs a TypeScript-capable loader or a linked install.
+
 ## Environment variables
 
 User-facing knobs:

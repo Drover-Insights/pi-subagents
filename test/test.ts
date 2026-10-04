@@ -104,3 +104,7 @@ import "./agents/registration-gating.test.ts";
 
 import "./runtime/outstanding-work.test.ts";
 import "./mux/herdr-work.test.ts";
+import "./trusted-launch/registry.test.ts";
+import "./trusted-launch/launcher.test.ts";
+import "./trusted-launch/extension-wiring.test.ts";
+import "./trusted-launch/fake.test.ts";

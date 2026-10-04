@@ -99,6 +99,7 @@ export async function coordinateSubagentLaunch(
 			...(herdrPlacementPolicy ? { herdrPlacementPolicy } : {}),
 			...zellijPlacement,
 		},
+		forcedCwd,
 	);
 	const storage = new ChildSessionStorage(prepared.subagentSessionFile);
 	if (existsSync(prepared.subagentSessionFile)) {

@@ -82,6 +82,19 @@ export interface SubagentParamsInput {
 	 * model-callable tool input like `forcedCwd`.
 	 */
 	launchEnv?: Record<string, string>;
+	/**
+	 * Internal: provenance of a trusted extension launch, persisted in launch
+	 * metadata. Stripped from model-callable tool input like `forcedCwd`.
+	 */
+	trustedLaunch?: TrustedLaunchProvenance;
+}
+
+export interface TrustedLaunchProvenance {
+	version: string;
+	/** Generation of the descriptor that launched the child. */
+	generation: string;
+	requestId: string;
+	labels?: Readonly<Record<string, string>>;
 }
 
 export interface WaitParams {

@@ -12,6 +12,12 @@
 		"url": "https://github.com/edxeth/pi-subagents"
 	},
 	"type": "module",
+	"exports": {
+		".": "./src/index.ts",
+		"./trusted-launch": "./src/trusted-launch/public.ts",
+		"./trusted-launch/fake": "./src/trusted-launch/fake.ts",
+		"./package.json": "./package.json"
+	},
 	"scripts": {
 		"test": "node --test test/test.ts test/system-prompt-mode.test.ts test/runtime/widget.test.ts test/mux/cmux.test.ts test/live-test-guard.test.ts",
 		"test:e2e-live-blocking": "node scripts/test-e2e-live-blocking.mjs",

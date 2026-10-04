@@ -81,7 +81,11 @@ import {
 	isHeadlessLaunchSession,
 	markInitialPromptLaunchComplete,
 	registerSubagentCoreTools,
+	shouldForceSynchronousLaunch,
+	type SubagentToolRuntime,
 } from "./tools/subagent-tools.ts";
+import { createTrustedLauncher } from "./trusted-launch/launcher.ts";
+import { publishTrustedSubagents, type TrustedSubagentsPublication } from "./trusted-launch/registry.ts";
 import { registerSubagentsView } from "./tools/subagents-view.ts";
 import { SUBAGENT_TOOL_NAME } from "./tools/tool-names.ts";
 import { adoptVerifiedRuns } from "./vf/run/adopt.ts";
@@ -163,6 +167,59 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		header.parentSession = parentSession;
 	}
 
+	// Tools denied via PI_DENY_TOOLS env var (set by parent agent based on frontmatter)
+	const deniedTools = new Set(
+		(process.env.PI_DENY_TOOLS ?? "")
+			.split(",")
+			.map((s) => s.trim())
+			.filter(Boolean),
+	);
+
+	const shouldRegister = (name: string) => !deniedTools.has(name);
+
+	const coreToolRuntime: SubagentToolRuntime = {
+		loadAgentDefaults: (agentName, cwd) => (agentName ? loadAgentDefaults(agentName, undefined, cwd) : null),
+		resolveEffectiveSessionMode,
+		resolveTaskSessionMode,
+		launchBackgroundSubagent,
+		launchSubagent,
+		watchBackgroundSubagent,
+		watchSubagent,
+		getWatcherSignal,
+		wireSubagentSteerBack,
+		startWidgetRefresh,
+		getLaunchedSubagentResult,
+		stopRunningSubagent,
+		muxUnavailableResult: () => muxUnavailableResult("tab-title"),
+	};
+	// The trusted launch descriptor of the current session; it launches through
+	// the same coordinator as the subagent tool, so it exists only with it.
+	let trustedLaunch: TrustedSubagentsPublication | undefined;
+	function retractTrustedLaunch() {
+		trustedLaunch?.dispose();
+		trustedLaunch = undefined;
+	}
+	function publishTrustedLaunch(ctx: ExtensionContext) {
+		retractTrustedLaunch();
+		if (!shouldRegister(SUBAGENT_TOOL_NAME)) return;
+		try {
+			trustedLaunch = publishTrustedSubagents(
+				createTrustedLauncher({
+					pi,
+					runtime: coreToolRuntime,
+					ctx,
+					forceSynchronous: () => shouldForceSynchronousLaunch(ctx.hasUI),
+				}),
+			);
+		} catch (error) {
+			// Another pi-subagents instance owns the descriptor; extensions that
+			// resolve it keep using that one, and this instance publishes none.
+			traceSubagentLaunch("trusted-launch.publish-refused", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+
 	const orchestrator = createOrchestratorController(pi, {
 		environment: process.env,
 		getRunningSubagentCount: () => runningSubagents.size,
@@ -174,6 +231,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		initializeSpawnWidthForSession();
 		void workReporting.start(ctx);
 		latestContext = ctx;
+		publishTrustedLaunch(ctx);
 		resetSubagentBatchStopRequest();
 		applySubagentLineage(ctx);
 		attachWidgetContext(ctx);
@@ -352,6 +410,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 			resetSubagentBatchStopRequest();
 			return;
 		}
+		retractTrustedLaunch();
 		await workReporting.stop();
 		orchestrator.handleSessionShutdown(ctx);
 
@@ -364,31 +423,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		}
 	});
 
-	// Tools denied via PI_DENY_TOOLS env var (set by parent agent based on frontmatter)
-	const deniedTools = new Set(
-		(process.env.PI_DENY_TOOLS ?? "")
-			.split(",")
-			.map((s) => s.trim())
-			.filter(Boolean),
-	);
-
-	const shouldRegister = (name: string) => !deniedTools.has(name);
-
-	registerSubagentCoreTools(pi, shouldRegister, {
-		loadAgentDefaults: (agentName, cwd) => (agentName ? loadAgentDefaults(agentName, undefined, cwd) : null),
-		resolveEffectiveSessionMode,
-		resolveTaskSessionMode,
-		launchBackgroundSubagent,
-		launchSubagent,
-		watchBackgroundSubagent,
-		watchSubagent,
-		getWatcherSignal,
-		wireSubagentSteerBack,
-		startWidgetRefresh,
-		getLaunchedSubagentResult,
-		stopRunningSubagent,
-		muxUnavailableResult: () => muxUnavailableResult("tab-title"),
-	});
+	registerSubagentCoreTools(pi, shouldRegister, coreToolRuntime);
 
 	registerSubagentResumeTool(pi, shouldRegister, {
 		getShellReadyDelayMs,
