@@ -6,7 +6,7 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { AgentDefaults } from "../agents/definitions.ts";
 import type { HerdrPlacementPolicy } from "../mux/herdr-surfaces.ts";
 import type { ZellijPlacementPolicy } from "../mux/zellij-placement.ts";
-import type { ParentClosePolicy, SubagentParamsInput } from "../types.ts";
+import type { ParentClosePolicy, SubagentParamsInput, TrustedLaunchProvenance } from "../types.ts";
 import { getEntries } from "./session.ts";
 
 export type SubagentSessionMode = "standalone" | "lineage-only" | "fork";
@@ -33,6 +33,13 @@ export interface PersistedSubagentLaunchMetadata {
 	sessionMode: SubagentSessionMode;
 	autoExit?: boolean;
 	parentClosePolicy: ParentClosePolicy;
+	/**
+	 * Where definitions and skills were resolved at launch, when the child
+	 * runs elsewhere (a forced cwd). Absent means `cwd`.
+	 */
+	blueprintCwd?: string;
+	/** Present when a trusted extension launched this child. */
+	trustedLaunch?: TrustedLaunchProvenance;
 	/** @deprecated compat — stop writing. Readers treat `blocking: true` as `async: false`. */
 	blocking?: boolean;
 	async: boolean;

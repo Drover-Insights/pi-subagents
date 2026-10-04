@@ -35,7 +35,7 @@ import {
 	resolveSubagentReportContextUsage,
 	shouldPersistNoSessionForTimeoutWrapUp,
 } from "./policy.ts";
-import type { ResumeMode } from "./resume.ts";
+import { getResumeDefinitionCwd, type ResumeMode } from "./resume.ts";
 import { type ResolvedSubagentRuntimePaths, resolveSubagentCwd } from "./runtime-paths.ts";
 import { buildSkillLaunchPlan, formatInjectedSkills, type SkillLaunchPlan } from "./skills.ts";
 
@@ -338,7 +338,13 @@ export async function getPersistedSessionParityArgs(
 	args.push(...getSubagentToolLaunchArgs(metadata.tools, new Set(metadata.denyTools), spawningAllowed));
 	args.push(
 		...(
-			await buildSkillLaunchPlan(metadata.skills, undefined, metadata.cwd, metadata.agentConfigDir, metadata.extensions)
+			await buildSkillLaunchPlan(
+				metadata.skills,
+				undefined,
+				getResumeDefinitionCwd(metadata),
+				metadata.agentConfigDir,
+				metadata.extensions,
+			)
 		).launchArgs,
 	);
 	args.push(...getPersistedApprovalLaunchArgs(metadata, modeOverride ?? metadata.mode));
@@ -373,6 +379,8 @@ export function buildPersistedSubagentLaunchMetadata(
 		PersistedSubagentLaunchMetadata,
 		"herdrPlacementPolicy" | "zellijPlacementPolicy" | "zellijPlacementGroupKey"
 	>,
+	/** The directory the child process actually runs in. */
+	childCwd = prepared.runtimePaths.targetCwdForSession,
 ): PersistedSubagentLaunchMetadata {
 	const allowModelOverride = prepared.agentDefs?.allowModelOverride !== false;
 	const modelSource =
@@ -399,6 +407,7 @@ export function buildPersistedSubagentLaunchMetadata(
 				? { autoExit: prepared.agentAutoExit }
 				: {}),
 		parentClosePolicy: resolveSubagentParentClosePolicy(prepared.agentDefs),
+		...(params.trustedLaunch ? { trustedLaunch: params.trustedLaunch } : {}),
 		reportContextUsage: resolveSubagentReportContextUsage(prepared.agentDefs),
 		async: params.async !== false,
 		...(prepared.effectiveModel ? { model: prepared.effectiveModel } : {}),
@@ -427,7 +436,10 @@ export function buildPersistedSubagentLaunchMetadata(
 		noSession: resolveSubagentNoSession(prepared.agentDefs),
 		trustProject: prepared.agentDefs?.trustProject === true,
 		agentConfigDir: prepared.runtimePaths.effectiveAgentConfigDir,
-		cwd: prepared.runtimePaths.targetCwdForSession,
+		cwd: childCwd,
+		...(childCwd !== prepared.runtimePaths.targetCwdForSession
+			? { blueprintCwd: prepared.runtimePaths.targetCwdForSession }
+			: {}),
 		...(prepared.agentDefs?.systemPromptMode ? { systemPromptMode: prepared.agentDefs.systemPromptMode } : {}),
 		...(systemPrompt ? { systemPrompt } : {}),
 		boundarySystemPrompt,

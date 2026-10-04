@@ -395,6 +395,24 @@ describe("launch authorization through the subagent tool", () => {
 		assert.equal(launched[0]?.policyLaunch, undefined);
 	});
 
+	test("strips a smuggled effective cwd and trusted provenance from model-callable input", async () => {
+		const { run, launched } = harness();
+
+		await run(
+			request("implementer", {
+				forcedCwd: "/tmp/smuggled",
+				trustedLaunch: { version: "pi-subagents.trusted-launch/v1", generation: "g", requestId: "op" },
+			}),
+		);
+		await run({ children: [request("implementer", { forcedCwd: "/tmp/smuggled-child" })] });
+
+		assert.equal(launched.length, 2);
+		for (const params of launched) {
+			assert.equal(params.forcedCwd, undefined);
+			assert.equal(params.trustedLaunch, undefined);
+		}
+	});
+
 	test("authorizes the mode the child launches in, not a smuggled background field", async () => {
 		process.env.PI_SUBAGENT_MUX = "tmux";
 		process.env.TMUX = "fake-tmux";

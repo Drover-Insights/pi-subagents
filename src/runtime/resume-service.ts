@@ -25,6 +25,7 @@ import { writeResumeTaskArtifact } from "../launch/prompt-artifacts.ts";
 import {
 	buildResumePiArgs,
 	getResumeCwd,
+	getResumeDefinitionCwd,
 	resolveResumeLaunchMetadata,
 } from "../launch/resume.ts";
 import { expandSubagentTask } from "../launch/task-expansion.ts";
@@ -280,7 +281,8 @@ async function resumeSubagentSessionWithoutWidth(
 	const targetAgent = launchMetadata?.agent ?? metadata.agent ?? input.agent;
 	const resumeBlocked = checkResumeRequest(loadCanonicalPolicy(getAgentConfigDir()), targetAgent);
 	if (resumeBlocked) throw new Error(`Routing policy blocked the request: ${resumeBlocked}.`);
-	const targetCwd = launchMetadata?.cwd ?? invocationMetadataSource?.cwd ?? process.cwd();
+	const definitionMetadata = launchMetadata ?? invocationMetadataSource;
+	const targetCwd = definitionMetadata ? getResumeDefinitionCwd(definitionMetadata) : process.cwd();
 	const targetDefs = targetAgent
 		? loadAgentDefaultsFromDefinitions(targetAgent, undefined, targetCwd, resolveSubagentCwd)
 		: null;

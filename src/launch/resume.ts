@@ -39,6 +39,11 @@ export function getResumeCwd(metadata: PersistedSubagentLaunchMetadata | undefin
 	return metadata?.cwd || undefined;
 }
 
+/** The directory a resume resolves agent definitions and skills from: where the launch resolved them. */
+export function getResumeDefinitionCwd(metadata: PersistedSubagentLaunchMetadata): string {
+	return metadata.blueprintCwd ?? metadata.cwd;
+}
+
 export function buildShellChangeDirectoryPrefix(cwd: string | undefined): string {
 	return cwd ? `cd ${shellEscape(cwd)} && ` : "";
 }

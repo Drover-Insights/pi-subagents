@@ -27,13 +27,15 @@ export function stripInternalLaunchOverrides<
 	if (
 		params.forcedCwd === undefined &&
 		params.launchEnv === undefined &&
-		params.policyLaunch === undefined
+		params.policyLaunch === undefined &&
+		params.trustedLaunch === undefined
 	)
 		return params;
 	const {
 		forcedCwd: _forcedCwd,
 		launchEnv: _launchEnv,
 		policyLaunch: _policyLaunch,
+		trustedLaunch: _trustedLaunch,
 		...rest
 	} = params;
 	return rest as T;
