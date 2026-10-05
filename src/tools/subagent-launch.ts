@@ -20,6 +20,7 @@ import {
 import { asSubagentToolResult, markSubagentBatchBlocking } from "../runtime/state.ts";
 import { parseSpawnEnv, resolveSpawnPolicy } from "../spawn/policy.ts";
 import type { SandboxProbe } from "../broker/sandbox-run.ts";
+import type { WriterLease } from "../broker/writer-lease.ts";
 import type { PolicyLaunch, RunningSubagent, SubagentParamsInput, SubagentResult } from "../types.ts";
 import { resolveVerifierCandidateCount } from "../vf/criteria.ts";
 import { launchVerifiedFanOut } from "../vf/run/launch.ts";
@@ -30,6 +31,7 @@ import {
 	reservePilotAttempts,
 	type SubagentRouting,
 } from "./subagent-routing.ts";
+import { type AcquireWriterLease, acquireWriterLeases, releaseUnlaunchedWriterLeases } from "./writer-leases.ts";
 
 type ToolResult = ReturnType<typeof asSubagentToolResult>;
 
@@ -51,6 +53,10 @@ export interface SubagentToolRuntime {
 	pilotAttempts?: PilotAttemptLedger;
 	/** Host check for the managed-child tool sandbox; defaults to the real probe. */
 	probeSandbox?: () => SandboxProbe;
+	/** Host check that a managed writer can run in its own PID namespace; defaults to the real probe. */
+	probeWriterConfinement?: () => SandboxProbe;
+	/** Writer lease acquisition; defaults to the durable store under the agent directory. */
+	acquireWriterLease?: AcquireWriterLease;
 }
 
 export function getSpawnWidthError(text: string): ToolResult {
@@ -142,11 +148,15 @@ async function launchOneSubagent(
 	agentDefs: AgentDefaults | null,
 	options: SubagentLaunchOptions,
 	policyLaunch?: PolicyLaunch,
+	writerLease?: WriterLease,
 ): Promise<RunningSubagent> {
 	const { ctx, pi, runtime } = options;
 	const effectiveParams = enforceAgentFrontmatter(params, agentDefs);
 	if (policyLaunch) {
 		effectiveParams.policyLaunch = policyLaunch;
+	}
+	if (writerLease) {
+		effectiveParams.writerLease = writerLease;
 	}
 	// In print/prompt-style runs there is no durable parent turn for async steer
 	// delivery. Force blocking and record the batch as blocking too, so a stop
@@ -223,6 +233,7 @@ export async function launchSubagentEntries(
 		forceSynchronous: options.forceSynchronous,
 		cwd: ctx.cwd,
 		...(runtime.probeSandbox ? { probeSandbox: runtime.probeSandbox } : {}),
+		...(runtime.probeWriterConfinement ? { probeWriterConfinement: runtime.probeWriterConfinement } : {}),
 	});
 	if (!Array.isArray(routing)) return rejectedPhase(routing);
 	// Slot cost per child: 1 normally, N candidates for a verified
@@ -242,6 +253,12 @@ export async function launchSubagentEntries(
 		releaseSlots(totalSlots);
 		return rejectedPhase(reservationRejection);
 	}
+	const writerLeases = acquireWriterLeases(routing, ctx.cwd, runtime.acquireWriterLease);
+	if (!Array.isArray(writerLeases)) {
+		releaseSlots(totalSlots);
+		releasePilotAttempts(routing, pilotAttempts);
+		return rejectedPhase(writerLeases);
+	}
 	let unlaunchedSlots = totalSlots;
 	const launched: RunningSubagent[] = [];
 	try {
@@ -256,6 +273,7 @@ export async function launchSubagentEntries(
 				entry.agentDefs,
 				options,
 				routing[index].policyLaunch,
+				writerLeases[index],
 			);
 			const evidence = routing[index].evidence;
 			if (evidence.status === "managed") {
@@ -269,6 +287,7 @@ export async function launchSubagentEntries(
 	} catch (error) {
 		releaseSlots(unlaunchedSlots);
 		releasePilotAttempts(routing.slice(launched.length), pilotAttempts);
+		releaseUnlaunchedWriterLeases(writerLeases.slice(launched.length), error);
 		throw error;
 	}
 	runtime.startWidgetRefresh();

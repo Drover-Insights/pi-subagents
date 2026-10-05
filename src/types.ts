@@ -1,4 +1,5 @@
 import type { ChildProcess } from "node:child_process";
+import type { WriterLease } from "./broker/writer-lease.ts";
 import type { ManagedRoutingEvidence } from "./routing/launch-authorization.ts";
 import type { PersistedSubagentLaunchMetadata } from "./session/session-files.ts";
 
@@ -89,6 +90,11 @@ export interface SubagentParamsInput {
 	 * metadata. Stripped from model-callable tool input like `forcedCwd`.
 	 */
 	trustedLaunch?: TrustedLaunchProvenance;
+	/**
+	 * Internal: the writer lease the launch phase acquired for a managed
+	 * writer. Stripped from model-callable tool input like `forcedCwd`.
+	 */
+	writerLease?: WriterLease;
 }
 
 export interface TrustedLaunchProvenance {
@@ -175,6 +181,12 @@ export interface RunningSubagent {
 	routing?: ManagedRoutingEvidence;
 	/** The verified resource inventory a managed child launched with; a relaunch re-verifies it. */
 	policyLaunch?: PolicyLaunch;
+	/** A managed writer's lease, released only once every generation's execution group is proven empty. */
+	writerLease?: WriterLease;
+	/** The generation the writer's current process was recorded under on its lease. */
+	writerGeneration?: number;
+	/** Host PID of the current generation's namespace init, the writer process itself. */
+	writerInitPid?: number;
 	mode: "interactive" | "background";
 	executionState: "starting" | "running";
 	deliveryState: DeliveryState;

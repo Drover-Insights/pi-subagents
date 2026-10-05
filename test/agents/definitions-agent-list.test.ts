@@ -22,6 +22,14 @@ import {
 	writeFileSync,
 } from "../support/index.ts";
 
+/** Point the agent directory at one holding a single agent, so the extension registers its tools. */
+function useAgentDirWithOneAgent(): void {
+	const agentDir = createTestDir();
+	mkdirSync(join(agentDir, "agents"), { recursive: true });
+	writeFileSync(join(agentDir, "agents", "helper.md"), "---\nname: helper\ndescription: Helps\n---\n\nHelper body.");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+}
+
 describe("agent definitions and catalog", () => {
 	afterEach(() => {
 		resetSubagentStateForTest();
@@ -495,6 +503,7 @@ describe("agent definitions and catalog", () => {
 	});
 
 	it("registers conservative delegation guidance on the subagent tool", () => {
+		useAgentDirWithOneAgent();
 		const tools = new Map<string, any>();
 
 		subagentsExtension({
@@ -544,6 +553,7 @@ describe("agent definitions and catalog", () => {
 	});
 
 	it("registers opt-out delegation guidance when coordinator-only turn stop is disabled", () => {
+		useAgentDirWithOneAgent();
 		process.env.PI_SUBAGENT_DISABLE_COORDINATOR_ONLY_TURN = "1";
 		const tools = new Map<string, any>();
 
@@ -569,6 +579,7 @@ describe("agent definitions and catalog", () => {
 	});
 
 	it("tells a one-shot pi -p parent that every launch waits and returns the report inline", () => {
+		useAgentDirWithOneAgent();
 		const originalArgv = process.argv;
 		process.argv = ["node", "pi", "-p", "@task.md"];
 		const tools = new Map<string, any>();

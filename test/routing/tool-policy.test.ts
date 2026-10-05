@@ -87,7 +87,15 @@ function harness(
 		elapsed: 0,
 	});
 	const runtime: SubagentToolRuntime = {
-		loadAgentDefaults: () => ({ spawning: false, mode: "background", async: false, ...options.agentDefs }),
+		// Read-only by default: a writer needs its own worktree, which only a trusted
+		// launch can name; writers are covered in test/routing/writer-launch.test.ts.
+		loadAgentDefaults: () => ({
+			spawning: false,
+			mode: "background",
+			async: false,
+			tools: "read,grep,find,ls",
+			...options.agentDefs,
+		}),
 		resolveEffectiveSessionMode: () => "lineage-only",
 		resolveTaskSessionMode: () => "lineage-only",
 		launchBackgroundSubagent: launch,
@@ -103,6 +111,7 @@ function harness(
 		...(options.pilotAttempts ? { pilotAttempts: options.pilotAttempts } : {}),
 		// The real sandbox is proven in test/broker; these tests stay independent of the host.
 		probeSandbox: options.probeSandbox ?? (() => ({ status: "available" })),
+		probeWriterConfinement: () => ({ status: "available" }),
 	};
 	const tools = new Map<string, { execute: (...args: unknown[]) => Promise<unknown> }>();
 	registerSubagentCoreTools(
@@ -748,12 +757,14 @@ describe("launch authorization through the subagent tool", () => {
 		for (const [tools, mode] of cases) {
 			const { run, launched } = harness({
 				probeSandbox: () => ({ status: "available" }),
-				...(tools ? { agentDefs: { tools } } : {}),
+				agentDefs: { tools },
 			});
 
-			await run(request("pilot-worker", { capabilityClass: "implementation" }));
+			const result = await run(request("pilot-worker", { capabilityClass: "implementation" }));
 
-			assert.deepEqual(launched[0]?.policyLaunch?.toolBroker, { mode }, String(tools));
+			// A writer called through the tool cannot name its own worktree, so the writer checks reject it.
+			if (mode === "writer") assert.equal(result.details.reason, "writer_worktree_invalid", String(tools));
+			else assert.deepEqual(launched[0]?.policyLaunch?.toolBroker, { mode }, String(tools));
 		}
 	});
 });

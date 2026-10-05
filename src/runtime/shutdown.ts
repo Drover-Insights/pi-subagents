@@ -15,6 +15,18 @@ export interface ShutdownRuntime {
 
 export function terminateBackgroundChildProcess(running: RunningSubagent, signal: NodeJS.Signals): void {
 	if (!running.childProcess?.pid) return;
+	// A writer's launcher dies at once from a stop signal, while the writer, the
+	// init of its own PID namespace, ignores any signal it has no handler for.
+	// While the launcher still holds the writer, its PID cannot be reused: signal
+	// the writer itself, so the launcher's exit reports the writer's. SIGKILL
+	// still reaches the whole group.
+	const child = running.childProcess;
+	if (signal !== "SIGKILL" && running.writerInitPid && child.exitCode === null && child.signalCode === null) {
+		try {
+			process.kill(running.writerInitPid, signal);
+		} catch {}
+		return;
+	}
 	try {
 		process.kill(-running.childProcess.pid, signal);
 	} catch {

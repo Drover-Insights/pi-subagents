@@ -92,6 +92,17 @@ describe("internal launch overrides (forcedCwd/launchEnv)", () => {
 		assert.equal(stripped.name, "cand");
 	});
 
+	it("strips a smuggled writer lease, which only the launch phase may attach", () => {
+		const stripped = stripInternalLaunchOverrides({
+			name: "cand",
+			task: "Do work",
+			title: "Do work",
+			agent: "worker",
+			writerLease: {} as never,
+		});
+		assert.equal("writerLease" in stripped, false);
+	});
+
 	it("keeps the internal fields off the model-callable subagent tool schema", () => {
 		for (const schema of [SubagentParams, SubagentChildParams]) {
 			const properties = Object.keys(schema.properties ?? {});

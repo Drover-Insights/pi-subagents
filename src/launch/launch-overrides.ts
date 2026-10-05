@@ -28,7 +28,8 @@ export function stripInternalLaunchOverrides<
 		params.forcedCwd === undefined &&
 		params.launchEnv === undefined &&
 		params.policyLaunch === undefined &&
-		params.trustedLaunch === undefined
+		params.trustedLaunch === undefined &&
+		params.writerLease === undefined
 	)
 		return params;
 	const {
@@ -36,6 +37,7 @@ export function stripInternalLaunchOverrides<
 		launchEnv: _launchEnv,
 		policyLaunch: _policyLaunch,
 		trustedLaunch: _trustedLaunch,
+		writerLease: _writerLease,
 		...rest
 	} = params;
 	return rest as T;

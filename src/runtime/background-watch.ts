@@ -1,5 +1,6 @@
 import { existsSync, statSync } from "node:fs";
 import { getTerminalAssistantSummary, shouldReapStableTerminalSummary } from "../agents/titles.ts";
+import { releaseWhenEmpty } from "../broker/writer-lease.ts";
 import { consumeSubagentExitSignal } from "../mux.ts";
 import { hasSubagentExitSidecar } from "../session/exit-sidecar.ts";
 import { findLastSubagentOutputWithSource, getEntries, getEntryCount, getNewEntries } from "../session/session.ts";
@@ -15,6 +16,7 @@ import {
 	hasChildProgress,
 	observeSubagentProgress,
 } from "./timeout-budget.ts";
+import { terminateBackgroundChildProcess } from "./shutdown.ts";
 import { startTimeoutWrapUpWithinDeadline } from "./timeout-restart.ts";
 
 export interface BackgroundWatchRuntime {
@@ -29,16 +31,6 @@ export interface BackgroundWatchOptions {
 }
 
 type BackgroundGenerationOutcome = { kind: "restart" } | { kind: "result"; result: SubagentResult };
-
-function terminateChildProcessGroup(running: RunningSubagent, signal: NodeJS.Signals): void {
-	const child = running.childProcess!;
-	if (!child.pid) return;
-	try {
-		process.kill(-child.pid, signal);
-	} catch {
-		child.kill(signal);
-	}
-}
 
 /**
  * True while any process in the child's group still exists.
@@ -175,6 +167,8 @@ async function watchBackgroundSubagentUntilFinal(
 		}
 	} finally {
 		runtime.cleanupNoSessionSessionFile(running);
+		// The result does not wait: the lease is released once the group is proven empty.
+		if (running.writerLease) void releaseWhenEmpty(running.writerLease);
 	}
 }
 
@@ -320,10 +314,10 @@ function watchBackgroundGeneration(
 		}, 1000);
 
 		const onAbort = () => {
-			terminateChildProcessGroup(running, "SIGTERM");
+			terminateBackgroundChildProcess(running, "SIGTERM");
 			setTimeout(() => {
 				if (processGroupPid && isProcessGroupAlive(processGroupPid)) {
-					terminateChildProcessGroup(running, "SIGKILL");
+					terminateBackgroundChildProcess(running, "SIGKILL");
 				}
 			}, 5000);
 		};

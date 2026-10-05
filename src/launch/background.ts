@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { getSubagentDisplayTitle } from "../agents/titles.ts";
+import { spawnLeasedWriter } from "../broker/writer-spawn.ts";
 import { clearSubagentExitSidecar } from "../session/exit-sidecar.ts";
 import { buildPiPromptArgs } from "../session/session-files.ts";
 import { getSubagentToolLaunchArgs } from "../tools/policy.ts";
@@ -149,15 +150,17 @@ export async function launchBackgroundSubagent(
 		envVars[PI_SUBAGENT_TIMEOUT_STARTED_AT] = String(startTime);
 	}
 	clearSubagentExitSidecar(prepared.subagentSessionFile);
-	const child = spawn(invocation.command, invocation.args, {
-		cwd: launch.forcedCwd ?? prepared.runtimePaths.effectiveCwd ?? ctx.cwd,
-		detached: true,
-		stdio:
-			resolveSubagentParentClosePolicy(prepared.agentDefs) === "continue"
-				? ["ignore", "ignore", "ignore"]
-				: ["ignore", "pipe", "pipe"],
-		env: getSubagentChildProcessEnv(invocation, envVars, denyPatterns),
-	});
+	const cwd = launch.forcedCwd ?? prepared.runtimePaths.effectiveCwd ?? ctx.cwd;
+	const stdio: ["ignore", "ignore" | "pipe", "ignore" | "pipe"] =
+		resolveSubagentParentClosePolicy(prepared.agentDefs) === "continue"
+			? ["ignore", "ignore", "ignore"]
+			: ["ignore", "pipe", "pipe"];
+	const env = getSubagentChildProcessEnv(invocation, envVars, denyPatterns);
+	// A managed writer runs as the init of its own PID namespace, recorded on its lease.
+	const writer = params.writerLease
+		? await spawnLeasedWriter(params.writerLease, 1, { command: invocation.command, args: invocation.args, cwd, env, stdio })
+		: undefined;
+	const child = writer?.child ?? spawn(invocation.command, invocation.args, { cwd, detached: true, stdio, env });
 	child.unref();
 	const running: RunningSubagent = {
 		id,
@@ -182,6 +185,9 @@ export async function launchBackgroundSubagent(
 		modelContextWindow: runtime.getContextWindow(prepared.effectiveModelRef),
 		modelRef: prepared.effectiveModelRef,
 		launchMetadata: launch.launchMetadata,
+		...(params.writerLease && writer
+			? { writerLease: params.writerLease, writerGeneration: 1, writerInitPid: writer.group.initPid }
+			: {}),
 	};
 	const rememberTail = (current: string | undefined, chunk: Buffer | string) =>
 		`${current ?? ""}${chunk.toString()}`.slice(-4000);
