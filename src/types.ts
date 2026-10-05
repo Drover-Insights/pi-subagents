@@ -157,6 +157,10 @@ export interface CompletedSubagentResult extends SubagentResult {
 	autoExit?: boolean;
 	reportContextUsage?: boolean;
 	deliveredTo: CompletedDelivery | null;
+	/** Process group of a background child's last generation, to probe whether it is gone. */
+	processGroupId?: number;
+	/** The trusted launch provenance the runtime held, never re-read from the child's session. */
+	trustedLaunch?: TrustedLaunchProvenance;
 }
 
 export interface RunningSubagent {

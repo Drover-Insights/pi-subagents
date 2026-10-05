@@ -55,6 +55,10 @@ export function buildCompletedSubagentResult(
 		autoExit: running.autoExit,
 		reportContextUsage: running.reportContextUsage,
 		deliveredTo: null,
+		...(running.mode === "background" && running.childProcess?.pid
+			? { processGroupId: running.childProcess.pid }
+			: {}),
+		...(running.launchMetadata?.trustedLaunch ? { trustedLaunch: running.launchMetadata.trustedLaunch } : {}),
 	};
 }
 

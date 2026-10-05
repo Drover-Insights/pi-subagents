@@ -113,3 +113,6 @@ import "./trusted-launch/fake.test.ts";
 import "./trusted-launch/resume-authority.test.ts";
 import "./runtime/resume-trusted-authority.test.ts";
 import "./trusted-launch/resume.test.ts";
+import "./trusted-launch/terminate-contract.test.ts";
+import "./trusted-launch/terminate.test.ts";
+import "./trusted-launch/terminate-lifecycle.test.ts";

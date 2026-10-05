@@ -962,7 +962,25 @@ const resumed = await resolved.descriptor.resume({
 - A descriptor from a later session or `/reload` can resume a child an earlier one launched; a disposed or replaced descriptor cannot. The original provenance is returned unchanged as `launch`.
 - Resumes are asynchronous only, as launches are. The result is `resumed`, `not_started` with a reason, or `unknown`, as for a launch. `resume` never throws.
 
-Downstream tests can use `createFakeTrustedSubagents` from `pi-subagents/trusted-launch/fake`. It publishes through the same registry and request validation and creates no process, session, or surface. It resumes only sessions it launched, for the same launch request and a directory that still passes the launch checks. Dispose it after each test, or the real descriptor cannot publish.
+A trusted child is terminated only through the descriptor, by the exact identities a `launched` or `resumed` result returned:
+
+```ts
+const stopped = await resolved.descriptor.terminate({
+	requestVersion: TRUSTED_LAUNCH_VERSION,
+	requestId: "op_03",
+	runId: result.runId,
+	sessionFile: result.sessionFile,
+	launchRequestId: "op_01",
+});
+```
+
+- `terminate` was added within `pi-subagents.trusted-launch/v1`, so a descriptor published by an older package instance lacks it: check `typeof resolved.descriptor.terminate === "function"` before calling it.
+- The request takes no pid, pane, name, or other key. The run must be one this session tracks under that `runId`, recorded with that session file and launched by that request, as the runtime recorded them rather than as the child's session file now says; anything else is refused without a signal, and no other run is tried.
+- The result is `terminated` when this call stopped the run and its process group is proven gone, `already_terminal` when the run had already finished and its recorded process group is proven gone, or `unknown` with a reason from `TRUSTED_TERMINATE_UNKNOWN_REASONS`. Only an `ESRCH` probe of the group counts as gone. `stopRequested` on `unknown` is false only when the call is known to have requested no stop.
+- It requests at most one stop, through the same path as `subagent_kill`, and never retries. That path aborts the child's watcher, which escalates to `SIGKILL` after 5 seconds; the call waits up to 8 seconds for the run to finish and reports `timeout` otherwise. Once the stop path runs, the child's spawn-width slot is released, even when the result is `unknown`.
+- An interactive child is closed but always reported `unknown` (`termination_unconfirmed`): no pane close proves its processes ended. A run whose leader exited while descendants keep running, a run this session no longer tracks (after `/reload`, for example), and a malformed result are `unknown` too. `terminate` never throws.
+
+Downstream tests can use `createFakeTrustedSubagents` from `pi-subagents/trusted-launch/fake`. It publishes through the same registry and request validation and creates no process, session, or surface. It resumes only sessions it launched, for the same launch request and a directory that still passes the launch checks. It terminates only runs it launched or resumed: a background run is `terminated` the first time and `already_terminal` after, an interactive run is always `unknown` (`termination_unconfirmed`), and `respondTerminate` scripts any other outcome. Dispose it after each test, or the real descriptor cannot publish.
 
 These entrypoints are TypeScript sources. Pi's extension loader imports them directly; plain Node refuses TypeScript under `node_modules`, so a test runner needs a TypeScript-capable loader or a linked install.
 

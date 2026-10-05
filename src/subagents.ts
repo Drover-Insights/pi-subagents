@@ -70,6 +70,7 @@ export {
 import { traceSubagentLaunch } from "./launch/trace.ts";
 import { classifyAssistantMessageForMixedBatch } from "./runtime/batch-classifier.ts";
 import {
+	completedSubagentResults,
 	markSubagentBatchBlocking,
 	requestSubagentBatchStop,
 	resetSubagentBatchStopRequest,
@@ -86,6 +87,7 @@ import {
 } from "./tools/subagent-tools.ts";
 import { createTrustedLauncher } from "./trusted-launch/launcher.ts";
 import { createTrustedResumer } from "./trusted-launch/resumer.ts";
+import { createTrustedTerminator } from "./trusted-launch/terminator.ts";
 import { publishTrustedSubagents, type TrustedSubagentsPublication } from "./trusted-launch/registry.ts";
 import { registerSubagentsView } from "./tools/subagents-view.ts";
 import { SUBAGENT_TOOL_NAME } from "./tools/tool-names.ts";
@@ -224,6 +226,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 			trustedLaunch = publishTrustedSubagents({
 				launch: createTrustedLauncher({ pi, runtime: coreToolRuntime, ctx, forceSynchronous }),
 				resume: createTrustedResumer({ pi, runtime: resumeRuntime, forceSynchronous }),
+				terminate: createTrustedTerminator({ runningSubagents, completedSubagentResults, stopRunningSubagent }),
 			});
 		} catch (error) {
 			// Another pi-subagents instance owns the descriptor; extensions that

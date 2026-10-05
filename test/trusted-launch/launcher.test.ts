@@ -91,6 +91,9 @@ function harness(
 		resume: async () => {
 			throw new Error("resume is not under test");
 		},
+		terminate: async () => {
+			throw new Error("terminate is not under test");
+		},
 	});
 	publications.push(publication);
 	return { publication, descriptor: publication.descriptor, launched, wired, stopped, widgetRefreshes: () => widgetRefreshes };
