@@ -61,6 +61,8 @@ import "./routing/canonical-policy.test.ts";
 import "./routing/completion-extension-pin.test.ts";
 import "./routing/tool-policy.test.ts";
 import "./routing/tool-schema.test.ts";
+import "./routing/pilot-attempt-store.test.ts";
+import "./routing/pilot-attempt-launch.test.ts";
 import "./broker/sandbox-plan.test.ts";
 import "./broker/sandbox-escape.test.ts";
 import "./broker/broker-env.test.ts";

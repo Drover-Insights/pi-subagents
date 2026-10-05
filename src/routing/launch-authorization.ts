@@ -11,18 +11,6 @@ import type { CanonicalPolicyState, CanonicalRoutingPolicy, RoutingInteractionMo
  * fixed route and resources, or not at all.
  */
 
-export type PilotAttemptLedger = {
-	reserve(caseId: string, launchId: string): { status: "reserved" } | { status: "unavailable"; reason: string };
-	/** Return an attempt whose launch never started. */
-	release(caseId: string, launchId: string): void;
-};
-
-/** Fail-closed placeholder until durable pilot attempt accounting lands (#7). */
-export const unavailablePilotAttemptLedger: PilotAttemptLedger = {
-	reserve: () => ({ status: "unavailable", reason: "Durable pilot attempt accounting is not available yet." }),
-	release: () => {},
-};
-
 type PolicyRejectionReason =
 	| "policy_invalid"
 	| "controller_child_forbidden"

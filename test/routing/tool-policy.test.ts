@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
-import { appendFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, test } from "node:test";
 import type { AgentDefaults } from "../../src/agents/definitions.ts";
-import type { PilotAttemptLedger } from "../../src/routing/launch-authorization.ts";
-import { getLiveSlotCount } from "../../src/runtime/spawn-width.ts";
+import { readPilotCase } from "../../src/routing/pilot-attempt-store.ts";
 import { registerSubagentCoreTools, type SubagentToolRuntime } from "../../src/tools/subagent-tools.ts";
 import type { RunningSubagent, SubagentParamsInput, SubagentResult } from "../../src/types.ts";
 import "../support/env.ts";
@@ -29,26 +28,9 @@ function usePolicy(edit: (policy: PolicyDocument) => void): void {
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 }
 
-/** A ledger that grants every attempt and records reservations and releases. */
-function recordingLedger() {
-	const reserved: string[][] = [];
-	const released: string[][] = [];
-	const ledger: PilotAttemptLedger = {
-		reserve(caseId, launchId) {
-			reserved.push([caseId, launchId]);
-			return { status: "reserved" };
-		},
-		release(caseId, launchId) {
-			released.push([caseId, launchId]);
-		},
-	};
-	return { ledger, reserved, released };
-}
-
 function harness(
 	options: {
 		agentDefs?: AgentDefaults;
-		pilotAttempts?: PilotAttemptLedger;
 		launchError?: Error;
 		/** 1-based launch attempt that throws "spawn failed". */
 		failOnLaunch?: number;
@@ -108,7 +90,6 @@ function harness(
 		getLaunchedSubagentResult: async () => ({ content: [], details: { status: "started" } }),
 		stopRunningSubagent: async () => {},
 		muxUnavailableResult: () => ({ content: [], details: {} }),
-		...(options.pilotAttempts ? { pilotAttempts: options.pilotAttempts } : {}),
 		// The real sandbox is proven in test/broker; these tests stay independent of the host.
 		probeSandbox: options.probeSandbox ?? (() => ({ status: "available" })),
 		probeWriterConfinement: () => ({ status: "available" }),
@@ -132,6 +113,7 @@ function harness(
 			hasUI,
 			cwd: options.cwd ?? process.cwd(),
 			sessionManager: {},
+			model: { provider: "openai-codex", id: "gpt-6-sol" },
 		})) as ToolResult;
 	return { run, launched, runs };
 }
@@ -158,6 +140,10 @@ describe("launch authorization through the subagent tool", () => {
 		}
 		agentDir = writeCanonicalPolicy();
 		process.env.PI_CODING_AGENT_DIR = agentDir;
+		// A pilot receipt hashes the Pi command; a small file keeps that cheap.
+		process.env.PI_SUBAGENT_PI_COMMAND = join(agentDir, "fake-pi");
+		// A standalone Pi build is a binary; a script must belong to the Pi package.
+		writeFileSync(process.env.PI_SUBAGENT_PI_COMMAND, readFileSync("/usr/bin/true"));
 	});
 
 	test("an invalid canonical policy rejects every child launch before any launch", async () => {
@@ -290,24 +276,19 @@ describe("launch authorization through the subagent tool", () => {
 	});
 
 	test("a pilot role launches only for a named, matching, unexpired pilot case", async () => {
-		const { ledger } = recordingLedger();
 		assert.equal(
-			(await rejection(request("pilot-scout", { capabilityClass: "literal" }), { pilotAttempts: ledger })).reason,
+			(await rejection(request("pilot-scout", { capabilityClass: "literal" }))).reason,
 			"pilot_case_required",
 		);
 		assert.equal(
 			(
-				await rejection(request("pilot-scout", { capabilityClass: "literal", pilotCase: "scout-literal-9" }), {
-					pilotAttempts: ledger,
-				})
+				await rejection(request("pilot-scout", { capabilityClass: "literal", pilotCase: "scout-literal-9" }))
 			).reason,
 			"unknown_pilot_case",
 		);
 		assert.equal(
 			(
-				await rejection(request("pilot-scout", { capabilityClass: "code-graph", pilotCase: "scout-literal-1" }), {
-					pilotAttempts: ledger,
-				})
+				await rejection(request("pilot-scout", { capabilityClass: "code-graph", pilotCase: "scout-literal-1" }))
 			).reason,
 			"pilot_case_mismatch",
 		);
@@ -316,28 +297,24 @@ describe("launch authorization through the subagent tool", () => {
 		});
 		assert.equal(
 			(
-				await rejection(request("pilot-scout", { capabilityClass: "literal", pilotCase: "scout-literal-1" }), {
-					pilotAttempts: ledger,
-				})
+				await rejection(request("pilot-scout", { capabilityClass: "literal", pilotCase: "scout-literal-1" }))
 			).reason,
 			"pilot_case_expired",
 		);
 	});
 
-	test("pilot launches fail closed until durable attempt accounting exists", async () => {
-		assert.deepEqual(
-			await rejection(request("pilot-scout", { capabilityClass: "literal", pilotCase: "scout-literal-1" })),
-			{ status: "policy_rejected", reason: "pilot_attempts_unavailable", launches: 0 },
-		);
-	});
-
 	test("an authorized pilot launch reserves its attempt and carries the policy launch and route evidence", async () => {
-		const { ledger, reserved: reservations } = recordingLedger();
-		const { run, launched, runs } = harness({ pilotAttempts: ledger, agentDefs: { tools: "read,grep" } });
+		const { run, launched, runs } = harness({ agentDefs: { tools: "read,grep" } });
 
 		const result = await run(request("pilot-scout", { capabilityClass: "literal", pilotCase: "scout-literal-1" }));
 
-		assert.deepEqual(reservations, [["scout-literal-1", "dispatch-1"]]);
+		assert.deepEqual(
+			readPilotCase(join(agentDir, "pilot-attempts"), "scout-literal-1")?.reservations.map((entry) => [
+				entry.launchId,
+				entry.outcome,
+			]),
+			[["dispatch-1", "committed"]],
+		);
 		const catalog = canonicalPolicyDocument().extensionCatalog;
 		const pinned = (id: string, base: string) =>
 			catalog[id].files.map((file: { path: string; sha256: string }) => ({
@@ -464,8 +441,7 @@ describe("launch authorization through the subagent tool", () => {
 	});
 
 	test("routes each capability class of a multi-route role to its own fixed route", async () => {
-		const { ledger } = recordingLedger();
-		const { run, launched } = harness({ pilotAttempts: ledger });
+		const { run, launched } = harness();
 
 		await run(request("pilot-scout", { capabilityClass: "code-graph", pilotCase: "scout-code-graph-1" }));
 
@@ -495,15 +471,18 @@ describe("launch authorization through the subagent tool", () => {
 	});
 
 	test("reserves pilot attempts only after every child of the call is authorized", async () => {
-		const rejected = recordingLedger();
-		await harness({ pilotAttempts: rejected.ledger }).run({
+		const reservations = () =>
+			(["scout-literal-1", "scout-code-graph-1"] as const).flatMap(
+				(caseId) => readPilotCase(join(agentDir, "pilot-attempts"), caseId)?.reservations.map((entry) => [caseId, entry.launchId]) ?? [],
+			);
+		await harness().run({
 			children: [
 				request("pilot-scout", { capabilityClass: "literal", pilotCase: "scout-literal-1" }),
 				request("pilot-worker", { name: "slice-worker", capabilityClass: "implementation", thinking: "high" }),
 			],
 		});
-		const accepted = recordingLedger();
-		await harness({ pilotAttempts: accepted.ledger }).run({
+		const rejectedCall = reservations();
+		await harness().run({
 			children: [
 				request("pilot-scout", { capabilityClass: "literal", pilotCase: "scout-literal-1" }),
 				request("pilot-worker", { name: "slice-worker", capabilityClass: "implementation" }),
@@ -511,85 +490,8 @@ describe("launch authorization through the subagent tool", () => {
 		});
 
 		assert.deepEqual(
-			{ rejectedCall: rejected.reserved, acceptedCall: accepted.reserved },
+			{ rejectedCall, acceptedCall: reservations() },
 			{ rejectedCall: [], acceptedCall: [["scout-literal-1", "dispatch-1:0"]] },
-		);
-	});
-
-	test("releases a reserved pilot attempt when the launch fails", async () => {
-		const { ledger, reserved, released } = recordingLedger();
-		const { run } = harness({ pilotAttempts: ledger, launchError: new Error("spawn failed") });
-
-		await assert.rejects(
-			() => run(request("pilot-scout", { capabilityClass: "literal", pilotCase: "scout-literal-1" })),
-			/spawn failed/,
-		);
-
-		assert.deepEqual({ reserved, released }, {
-			reserved: [["scout-literal-1", "dispatch-1"]],
-			released: [["scout-literal-1", "dispatch-1"]],
-		});
-	});
-
-	test("a refused pilot reservation releases the call's earlier reservations and its spawn slots", async () => {
-		const reserved: string[][] = [];
-		const released: string[][] = [];
-		const ledger: PilotAttemptLedger = {
-			reserve(caseId, launchId) {
-				reserved.push([caseId, launchId]);
-				return caseId === "scout-literal-1" ? { status: "reserved" } : { status: "unavailable", reason: "exhausted" };
-			},
-			release(caseId, launchId) {
-				released.push([caseId, launchId]);
-			},
-		};
-		const { run, launched } = harness({ pilotAttempts: ledger });
-		const pilotBatch = {
-			children: [
-				request("pilot-scout", { capabilityClass: "literal", pilotCase: "scout-literal-1" }),
-				request("pilot-scout", { name: "graph-scout", capabilityClass: "code-graph", pilotCase: "scout-code-graph-1" }),
-			],
-		};
-
-		const slotsBefore = getLiveSlotCount();
-		const result = await run(pilotBatch);
-
-		assert.deepEqual(
-			{ reason: result.details.reason, released, launches: launched.length, slots: getLiveSlotCount() },
-			{
-				reason: "pilot_attempts_unavailable",
-				released: [["scout-literal-1", "dispatch-1:0"]],
-				launches: 0,
-				slots: slotsBefore,
-			},
-		);
-	});
-
-	test("a launch failure mid-batch releases only the children that never launched", async () => {
-		const { ledger, released } = recordingLedger();
-		const { run } = harness({ pilotAttempts: ledger, failOnLaunch: 2 });
-		const slotsBefore = getLiveSlotCount();
-
-		await assert.rejects(
-			() =>
-				run({
-					children: [
-						request("pilot-scout", { capabilityClass: "literal", pilotCase: "scout-literal-1" }),
-						request("pilot-scout", {
-							name: "graph-scout",
-							capabilityClass: "code-graph",
-							pilotCase: "scout-code-graph-1",
-						}),
-					],
-				}),
-			/spawn failed/,
-		);
-
-		// The launched child's slot is freed when its watch settles.
-		await new Promise((resolve) => setImmediate(resolve));
-		assert.deepEqual(
-			{ released, slots: getLiveSlotCount() },
-			{ released: [["scout-code-graph-1", "dispatch-1:1"]], slots: slotsBefore },
 		);
 	});
 
@@ -617,18 +519,10 @@ describe("launch authorization through the subagent tool", () => {
 
 	test("a missing or altered file rejects before any pilot attempt is reserved", async () => {
 		appendFileSync(join(agentDir, "extensions/workspace-boundary/index.ts"), "// drift\n");
-		const { ledger, reserved } = recordingLedger();
+		const result = await rejection(request("pilot-scout", { capabilityClass: "literal", pilotCase: "scout-literal-1" }));
 
-		const result = await rejection(request("pilot-scout", { capabilityClass: "literal", pilotCase: "scout-literal-1" }), {
-			pilotAttempts: ledger,
-		});
-
-		assert.deepEqual({ ...result, reserved }, {
-			status: "policy_rejected",
-			reason: "resource_unverified",
-			launches: 0,
-			reserved: [],
-		});
+		assert.deepEqual(result, { status: "policy_rejected", reason: "resource_unverified", launches: 0 });
+		assert.equal(readPilotCase(join(agentDir, "pilot-attempts"), "scout-literal-1"), null);
 	});
 
 	test("rejects a completion helper catalog entry that is not the file the launcher loads", async () => {

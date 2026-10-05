@@ -8,7 +8,6 @@ import {
 	shouldUseBackgroundLaunch,
 } from "../launch/policy.ts";
 import type { SubagentLaunchContext } from "../launch/prep.ts";
-import { type PilotAttemptLedger, unavailablePilotAttemptLedger } from "../routing/launch-authorization.ts";
 import {
 	claimSpawnWidthSlot,
 	getLiveSlotCount,
@@ -26,11 +25,13 @@ import { resolveVerifierCandidateCount } from "../vf/criteria.ts";
 import { launchVerifiedFanOut } from "../vf/run/launch.ts";
 import { applySynchronousLaunchPolicy } from "./policy.ts";
 import {
-	authorizeSubagentLaunches,
-	releasePilotAttempts,
+	commitLaunchedPilotAttempt,
+	preparePilotReceipts,
+	refundPilotAttempts,
 	reservePilotAttempts,
-	type SubagentRouting,
-} from "./subagent-routing.ts";
+	settleFailedPilotAttempt,
+} from "./pilot-attempts.ts";
+import { authorizeSubagentLaunches, type SubagentRouting } from "./subagent-routing.ts";
 import { type AcquireWriterLease, acquireWriterLeases, releaseUnlaunchedWriterLeases } from "./writer-leases.ts";
 
 type ToolResult = ReturnType<typeof asSubagentToolResult>;
@@ -49,8 +50,6 @@ export interface SubagentToolRuntime {
 	getLaunchedSubagentResult(running: RunningSubagent, signal?: AbortSignal): Promise<ToolResult>;
 	stopRunningSubagent(running: RunningSubagent): Promise<void>;
 	muxUnavailableResult(action: string): unknown;
-	/** Pilot attempt reservations; defaults to failing closed. */
-	pilotAttempts?: PilotAttemptLedger;
 	/** Host check for the managed-child tool sandbox; defaults to the real probe. */
 	probeSandbox?: () => SandboxProbe;
 	/** Host check that a managed writer can run in its own PID namespace; defaults to the real probe. */
@@ -211,7 +210,10 @@ function rejectedPhase(result: ToolResult): SubagentLaunchPhase {
 	const details = result.details as { reason?: string; error?: string };
 	const message = result.content.map((block) => ("text" in block ? block.text : "")).join("\n");
 	if (details.error === "spawn_width") return { status: "rejected", reason: "spawn_width", message, result };
-	const reason = details.reason === "pilot_attempts_unavailable" ? details.reason : "policy_rejected";
+	const reason =
+		details.reason === "pilot_attempts_unavailable" || details.reason === "pilot_receipt_unavailable"
+			? "pilot_attempts_unavailable"
+			: "policy_rejected";
 	return { status: "rejected", reason, message, result };
 }
 
@@ -219,8 +221,9 @@ function rejectedPhase(result: ToolResult): SubagentLaunchPhase {
  * The launch phase every child goes through, from the `subagent` tool or a
  * trusted extension: policy-bound authorization, spawn-width slots, pilot
  * attempts, the launch itself, and result routing. A rejection launches
- * nothing; a throw comes from the launch itself, after reservations were
- * returned for every child that did not start.
+ * nothing and leaves every pilot attempt unconsumed; a throw comes from the
+ * launch itself, after reservations were refunded for every child that
+ * provably did not start.
  */
 export async function launchSubagentEntries(
 	entries: readonly SubagentLaunchEntry[],
@@ -247,26 +250,34 @@ export async function launchSubagentEntries(
 	const totalSlots = slotCosts.reduce((sum, cost) => sum + cost, 0);
 	const widthLimit = getSpawnWidthLimit();
 	if (!tryAcquireSlots(totalSlots, widthLimit)) return rejectedPhase(getSpawnWidthLimitError(widthLimit));
-	const pilotAttempts = runtime.pilotAttempts ?? unavailablePilotAttemptLedger;
-	const reservationRejection = reservePilotAttempts(routing, pilotAttempts);
-	if (reservationRejection) {
+	// Every receipt is built before the store is written, so a missing one consumes nothing.
+	const receipts = preparePilotReceipts(routing, ctx, pi);
+	if (!Array.isArray(receipts)) {
 		releaseSlots(totalSlots);
-		return rejectedPhase(reservationRejection);
+		return rejectedPhase(receipts);
+	}
+	const pilotAttempts = reservePilotAttempts(routing, receipts);
+	if (!Array.isArray(pilotAttempts)) {
+		releaseSlots(totalSlots);
+		return rejectedPhase(pilotAttempts);
 	}
 	const writerLeases = acquireWriterLeases(routing, ctx.cwd, runtime.acquireWriterLease);
 	if (!Array.isArray(writerLeases)) {
 		releaseSlots(totalSlots);
-		releasePilotAttempts(routing, pilotAttempts);
+		refundPilotAttempts(pilotAttempts, ["a writer lease of the same call was refused before any child started"]);
 		return rejectedPhase(writerLeases);
 	}
 	let unlaunchedSlots = totalSlots;
 	const launched: RunningSubagent[] = [];
+	// The child whose launch is under way; a throw anywhere else blames no child.
+	let launching: number | null = null;
 	try {
 		if (entries.length > 1 && entries.some((entry) => resolveSubagentBlocking(entry.child, entry.agentDefs))) {
 			markSubagentBatchBlocking();
 		}
 		for (let index = 0; index < entries.length; index++) {
 			const entry = entries[index];
+			launching = index;
 			const running = await launchOneSubagent(
 				routing[index].launchId,
 				entry.child,
@@ -282,12 +293,20 @@ export async function launchSubagentEntries(
 			}
 			unlaunchedSlots -= slotCosts[index];
 			launched.push(running);
+			launching = null;
+			commitLaunchedPilotAttempt(pilotAttempts[index]);
 			runtime.wireSubagentSteerBack(pi, running, running.completionPromise as Promise<SubagentResult>);
 		}
 	} catch (error) {
 		releaseSlots(unlaunchedSlots);
-		releasePilotAttempts(routing.slice(launched.length), pilotAttempts);
-		releaseUnlaunchedWriterLeases(writerLeases.slice(launched.length), error);
+		const neverStarted = launching === null ? launched.length : launching + 1;
+		// Leases first: a never-started child's attempt is refunded only once its owned resources are released.
+		const leaseReleased = releaseUnlaunchedWriterLeases(
+			[launching === null ? undefined : writerLeases[launching], ...writerLeases.slice(neverStarted)],
+			error,
+		);
+		refundPilotAttempts(pilotAttempts.slice(neverStarted), ["an earlier child of the same call failed to launch"]);
+		if (launching !== null) settleFailedPilotAttempt(pilotAttempts[launching], error, leaseReleased);
 		throw error;
 	}
 	runtime.startWidgetRefresh();
