@@ -662,6 +662,7 @@ describe("child launch plan", () => {
 					model: "openai-codex/gpt-5.6-luna",
 					thinking: "low",
 					extensions: [],
+					toolBroker: { mode: "read-only" },
 				},
 			},
 			agentDefs: {
@@ -691,6 +692,7 @@ describe("child launch plan", () => {
 				model: "openai-codex/gpt-5.6-luna",
 				thinking: "low",
 				extensions: [],
+				toolBroker: { mode: "read-only" as const },
 			},
 		};
 		const options = {

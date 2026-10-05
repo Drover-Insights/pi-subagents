@@ -1,5 +1,8 @@
 import { type AgentDefaults, getAgentConfigDir } from "../agents/definitions.ts";
+import { checkToolBroker } from "../broker/preflight.ts";
+import type { SandboxProbe } from "../broker/sandbox-run.ts";
 import { enforceAgentFrontmatter, resolveSubagentBlocking, shouldUseBackgroundLaunch } from "../launch/policy.ts";
+import { resolveSubagentCwd } from "../launch/runtime-paths.ts";
 import { loadCanonicalPolicy, type RoutingInteractionMode } from "../routing/canonical-policy.ts";
 import {
 	authorizeLaunch,
@@ -23,7 +26,17 @@ type RoutingOptions = {
 	hasUI: boolean;
 	/** Whether this session forces every launch to be awaited. */
 	forceSynchronous: boolean;
+	/** The parent session's working directory. */
+	cwd: string;
+	/** Host sandbox check; defaults to the real probe. */
+	probeSandbox?: () => SandboxProbe;
 };
+
+/** The directory a child process will run in, as the launcher resolves it. */
+function getChildCwd(child: SubagentParamsInput, parentCwd: string): string {
+	if (child.forcedCwd) return child.forcedCwd;
+	return child.cwd ? resolveSubagentCwd(child.cwd, parentCwd) : parentCwd;
+}
 
 /**
  * The interaction mode a child actually launches in: judged on the same
@@ -79,6 +92,17 @@ export function authorizeSubagentLaunches(
 		if (authorization.status === "authorized") {
 			const verification = verifyPolicyLaunch(authorization.launch, agentDir);
 			if (verification.status === "rejected") return policyRejection(verification.reason, verification.message);
+			const brokerFailure = checkToolBroker(
+				getChildCwd(child, options.cwd),
+				authorization.launch.toolBroker.mode,
+				options.probeSandbox,
+			);
+			if (brokerFailure !== null) {
+				return policyRejection(
+					"tool_broker_unavailable",
+					`agent ${child.agent} cannot run its tools in a credential-blind sandbox: ${brokerFailure}`,
+				);
+			}
 		}
 		routing.push(
 			authorization.status === "authorized"

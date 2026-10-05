@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import type { AgentDefaults } from "../agents/definitions.ts";
+import { brokerModeForTools } from "../broker/preflight.ts";
 import { getPackageRoot } from "../launch/completion-helper.ts";
 import type { ManagedExtension, PolicyLaunch } from "../types.ts";
 import type { CanonicalPolicyState, CanonicalRoutingPolicy, RoutingInteractionMode } from "./canonical-policy.ts";
@@ -218,6 +219,7 @@ export function authorizeLaunch(request: LaunchAuthorizationRequest): LaunchAuth
 		model: `${route.provider}/${route.model}`,
 		thinking: route.effort,
 		extensions: loadedExtensions.map((id) => managedExtension(policy, id, request.agentDir)),
+		toolBroker: { mode: brokerModeForTools(request.agentDefs?.tools) },
 	});
 	const evidence: ManagedRoutingEvidence = deepFreeze({
 		status: "managed",

@@ -308,6 +308,22 @@ describe("parent-authorized requests to managed children", () => {
 		);
 	});
 
+	it("relaunches a managed timeout wrap-up with its tool broker config", async () => {
+		const dir = createTestDir();
+		const running = managedRunning(dir, sessionIn(dir));
+		const marker = join(dir, "broker-env");
+		process.env.PI_SUBAGENT_PI_COMMAND = writeExecutable(
+			dir,
+			"env-pi",
+			`#!/usr/bin/env bash\nprintf '%s\\n' "$PI_SUBAGENT_TOOL_BROKER" > '${marker}'\ncat >/dev/null\n`,
+		);
+
+		await restartSubagentForTimeoutWrapUp(running, { getShellReadyDelayMs: () => 0 });
+		await new Promise((resolve) => running.childProcess?.once("exit", resolve));
+
+		assert.equal(readFileSync(marker, "utf8").trim(), '{"version":1,"mode":"writer"}');
+	});
+
 	it("blocks a managed timeout wrap-up whose catalogued files changed since launch", async () => {
 		const dir = createTestDir();
 		const running = managedRunning(dir, sessionIn(dir));

@@ -20,6 +20,7 @@ Source layout:
 - `src/launch/` owns child launch preparation, launch policy, child command construction, resume args, prompt artifacts, runtime path resolution, and session seeding.
 - `src/runtime/` owns running state, wait/join, shutdown, background/interactive watchers, result routing, and widgets.
 - `src/session/` owns JSONL session helpers and trimmed fork-session logic.
+- `src/broker/` owns the credential-blind tool broker for managed children: sandbox planning and running, the seccomp filter, the brokered tool operations, the `PI_SUBAGENT_TOOL_BROKER` env contract, and the launch preflight.
 - `src/tools/` owns Pi tool/command implementations and tool policy.
 - `src/mux/` owns multiplexer internals; `src/mux.ts` is the public barrel.
 - `src/artifact-storage.ts` owns artifact storage roots/paths. `src/launch/prompt-artifacts.ts` owns writing launch prompt/task artifact files. Do not blur these names.

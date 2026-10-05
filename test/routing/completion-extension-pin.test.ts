@@ -9,7 +9,7 @@ import { test } from "node:test";
  * formatting included, breaks that pin, so change this file only together
  * with a re-pin in pi-config.
  */
-const PINNED_SUBAGENT_DONE_SHA256 = "7dafab8303209e430bd95bc9a45a66b0063ec5f41e3eba724909887bb0852b5a";
+const PINNED_SUBAGENT_DONE_SHA256 = "fa9d45af15fcecc4423b72169866f3603acd995b319de8b9627044c72f0642c0";
 
 test("the completion extension still matches the hash the routing policy pins", () => {
 	const actual = createHash("sha256")

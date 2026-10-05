@@ -17,6 +17,7 @@ import { ProviderErrorRecoveryController, resolveProviderRecoveryDelaysMs } from
 import { registerSetTabTitleTool, shouldRegisterSetTabTitleTool } from "./set-tab-title.ts";
 import { createCallerPingState, registerCallerPingTool, rearmCallerPingExitAfterReenable, suppressCallerPingExit } from "./caller-ping.ts";
 import { SUBAGENT_DONE_TOOL_NAME, SUBAGENT_LAUNCH_TOOL_NAMES } from "./tool-names.ts";
+import { installToolBroker } from "../broker/tools.ts";
 
 const TOOL_BOUNDARY_RECOVERY_NUDGE = "continue";
 const MAX_CONSECUTIVE_TOOL_BOUNDARY_ENDS = 3;
@@ -97,6 +98,8 @@ export function installDeniedToolGuards(
 }
 
 export default function (pi: ExtensionAPI) {
+	// First, so a managed child's model tools are the sandboxed overrides.
+	installToolBroker(pi);
 	const typebox = optionalRequire("typebox") as typeof import("typebox") | null;
 	const doneParams = typebox?.Type?.Object
 		? typebox.Type.Object({})

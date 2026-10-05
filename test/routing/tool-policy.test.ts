@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { appendFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, test } from "node:test";
 import type { AgentDefaults } from "../../src/agents/definitions.ts";
@@ -51,6 +52,9 @@ function harness(
 		launchError?: Error;
 		/** 1-based launch attempt that throws "spawn failed". */
 		failOnLaunch?: number;
+		probeSandbox?: SubagentToolRuntime["probeSandbox"];
+		/** The parent session's working directory. */
+		cwd?: string;
 	} = {},
 ) {
 	const launched: SubagentParamsInput[] = [];
@@ -97,6 +101,8 @@ function harness(
 		stopRunningSubagent: async () => {},
 		muxUnavailableResult: () => ({ content: [], details: {} }),
 		...(options.pilotAttempts ? { pilotAttempts: options.pilotAttempts } : {}),
+		// The real sandbox is proven in test/broker; these tests stay independent of the host.
+		probeSandbox: options.probeSandbox ?? (() => ({ status: "available" })),
 	};
 	const tools = new Map<string, { execute: (...args: unknown[]) => Promise<unknown> }>();
 	registerSubagentCoreTools(
@@ -115,7 +121,7 @@ function harness(
 	const run = async (params: Record<string, unknown>, hasUI = false) =>
 		(await tool.execute("dispatch-1", params, undefined, undefined, {
 			hasUI,
-			cwd: process.cwd(),
+			cwd: options.cwd ?? process.cwd(),
 			sessionManager: {},
 		})) as ToolResult;
 	return { run, launched, runs };
@@ -340,6 +346,7 @@ describe("launch authorization through the subagent tool", () => {
 				{ id: "workspace-boundary", files: pinned("workspace-boundary", agentDir) },
 				{ id: "drover-model-routing", files: pinned("drover-model-routing", agentDir) },
 			],
+			toolBroker: { mode: "read-only" },
 		});
 		assert.deepEqual(result.details.routing, {
 			status: "managed",
@@ -684,5 +691,69 @@ describe("launch authorization through the subagent tool", () => {
 			{ status: (result.details.routing as { status?: string } | undefined)?.status, launches: launched.length },
 			{ status: "managed", launches: 1 },
 		);
+	});
+
+	test("a host that cannot provide the tool sandbox rejects every managed launch before any launch", async () => {
+		const unavailable = () => ({ status: "unavailable" as const, message: "bubblewrap is missing" });
+		const batch = {
+			children: [
+				request("implementer", { name: "plain-worker" }),
+				request("pilot-worker", { capabilityClass: "implementation" }),
+			],
+		};
+		const { run, launched } = harness({ probeSandbox: unavailable });
+
+		const result = await run(batch);
+
+		assert.deepEqual(
+			{ status: result.details.status, reason: result.details.reason, launches: launched.length },
+			{ status: "policy_rejected", reason: "tool_broker_unavailable", launches: 0 },
+		);
+		assert.match(result.content[0]?.text ?? "", /bubblewrap is missing/);
+	});
+
+	test("an unmanaged launch does not need the tool sandbox", async () => {
+		const { run, launched } = harness({
+			probeSandbox: () => ({ status: "unavailable", message: "bubblewrap is missing" }),
+		});
+
+		await run(request("implementer"));
+
+		assert.equal(launched.length, 1);
+	});
+
+	test("rejects a managed child whose sandbox would expose a protected path such as the home directory", async () => {
+		const { run, launched } = harness({ probeSandbox: () => ({ status: "available" }), cwd: homedir() });
+
+		const result = await run(request("pilot-worker", { capabilityClass: "implementation" }));
+
+		assert.deepEqual(
+			{ reason: result.details.reason, launches: launched.length },
+			{ reason: "tool_broker_unavailable", launches: 0 },
+		);
+		assert.match(result.content[0]?.text ?? "", /protected path/);
+	});
+
+	test("a managed launch carries the broker mode its tool allowlist implies", async () => {
+		const cases: [string | undefined, string][] = [
+			["read,grep,find,ls", "read-only"],
+			["read,bash,grep,find,ls", "read-only"],
+			["read,bash,edit,write,grep,find,ls,caller_ping", "writer"],
+			["read,Edit", "writer"],
+			["all", "writer"],
+			[" ALL ", "writer"],
+			["none", "read-only"],
+			[undefined, "writer"],
+		];
+		for (const [tools, mode] of cases) {
+			const { run, launched } = harness({
+				probeSandbox: () => ({ status: "available" }),
+				...(tools ? { agentDefs: { tools } } : {}),
+			});
+
+			await run(request("pilot-worker", { capabilityClass: "implementation" }));
+
+			assert.deepEqual(launched[0]?.policyLaunch?.toolBroker, { mode }, String(tools));
+		}
 	});
 });
