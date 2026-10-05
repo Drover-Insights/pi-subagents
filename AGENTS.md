@@ -120,3 +120,21 @@ After live testing:
 - restore or delete any temporary agent files created for the repro
 - remove temporary session dirs if no longer needed
 - clear test-only environment variables
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in GitHub Issues for Drover-Insights/pi-subagents. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default vocabulary: bug/enhancement, needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix, P1-P3, needs-agent. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: root `CONTEXT.md` and `docs/adr/`. See `docs/agents/domain.md`.
+
+### Product areas
+
+Six areas: trust, launch, runtime, tools, mux, verification. See `docs/agents/product-areas.md`.

@@ -5,6 +5,7 @@ node_modules/
 AGENTS.md
 scorecard.png
 package-lock.json
-CONTEXT.md
-docs/
+docs/*
+!docs/agents/
+!docs/adr/
 .audit/
