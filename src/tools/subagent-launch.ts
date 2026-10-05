@@ -19,6 +19,7 @@ import {
 } from "../runtime/spawn-width.ts";
 import { asSubagentToolResult, markSubagentBatchBlocking } from "../runtime/state.ts";
 import { parseSpawnEnv, resolveSpawnPolicy } from "../spawn/policy.ts";
+import type { SandboxProbe } from "../broker/sandbox-run.ts";
 import type { PolicyLaunch, RunningSubagent, SubagentParamsInput, SubagentResult } from "../types.ts";
 import { resolveVerifierCandidateCount } from "../vf/criteria.ts";
 import { launchVerifiedFanOut } from "../vf/run/launch.ts";
@@ -48,6 +49,8 @@ export interface SubagentToolRuntime {
 	muxUnavailableResult(action: string): unknown;
 	/** Pilot attempt reservations; defaults to failing closed. */
 	pilotAttempts?: PilotAttemptLedger;
+	/** Host check for the managed-child tool sandbox; defaults to the real probe. */
+	probeSandbox?: () => SandboxProbe;
 }
 
 export function getSpawnWidthError(text: string): ToolResult {
@@ -218,6 +221,8 @@ export async function launchSubagentEntries(
 		launchId: options.launchId,
 		hasUI: ctx.hasUI,
 		forceSynchronous: options.forceSynchronous,
+		cwd: ctx.cwd,
+		...(runtime.probeSandbox ? { probeSandbox: runtime.probeSandbox } : {}),
 	});
 	if (!Array.isArray(routing)) return rejectedPhase(routing);
 	// Slot cost per child: 1 normally, N candidates for a verified

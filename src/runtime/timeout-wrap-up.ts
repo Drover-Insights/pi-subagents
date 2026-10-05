@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { getAgentConfigDir } from "../agents/definitions.ts";
+import { toolBrokerEnv } from "../broker/env-contract.ts";
 import { loadCanonicalPolicy } from "../routing/canonical-policy.ts";
 import { checkManagedChildRequest } from "../routing/launch-authorization.ts";
 import { verifyPolicyLaunch } from "../routing/resource-verification.ts";
@@ -154,6 +155,7 @@ async function getWrapUpLaunchParts(running: RunningSubagent, signal?: AbortSign
 	env.PI_SUBAGENT_SPAWN_WIDTH_EFFECTIVE = "";
 	env.PI_PACKAGE_DIR = "";
 	env.PI_ARTIFACT_PROJECT_ROOT = getArtifactStorageRoot();
+	Object.assign(env, toolBrokerEnv(managed));
 	return {
 		args: [...extensionArgs, ...parityArgs],
 		env,

@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentConfigDir, loadAgentDefaults as loadAgentDefaultsFromDefinitions } from "../agents/definitions.ts";
+import { toolBrokerEnv } from "../broker/env-contract.ts";
 import { loadCanonicalPolicy } from "../routing/canonical-policy.ts";
 import { checkResumeRequest } from "../routing/launch-authorization.ts";
 import { getArtifactStorageRoot } from "../artifact-storage.ts";
@@ -408,6 +409,8 @@ async function resumeSubagentSessionWithoutWidth(
 	resumeEnvVars.PI_SUBAGENT_AUTO_EXIT = resumedAutoExit ? "1" : "";
 	resumeEnvVars.PI_PACKAGE_DIR = "";
 	resumeEnvVars.PI_ARTIFACT_PROJECT_ROOT = getArtifactStorageRoot();
+	// Managed children cannot resume yet (checkResumeRequest), so no resumed child is brokered.
+	Object.assign(resumeEnvVars, toolBrokerEnv(undefined));
 
 	const id = Math.random().toString(16).slice(2, 10);
 	const running: RunningSubagent = {

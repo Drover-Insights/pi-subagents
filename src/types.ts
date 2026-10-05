@@ -44,6 +44,8 @@ export interface PolicyLaunch {
 	model: string;
 	thinking: string;
 	extensions: readonly ManagedExtension[];
+	/** How the child's credential-blind tool broker confines its tools. */
+	toolBroker: Readonly<{ mode: "read-only" | "writer" }>;
 }
 
 export interface SubagentParamsInput {

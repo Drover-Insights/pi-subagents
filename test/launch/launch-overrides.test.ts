@@ -74,7 +74,14 @@ describe("internal launch overrides (forcedCwd/launchEnv)", () => {
 			agent: "worker",
 			forcedCwd: "/tmp/worktree",
 			launchEnv: { COMPOSE_PROJECT_NAME: "bo-run-w0" },
-			policyLaunch: { model: "provider/policy-model", thinking: "low", extensions: [], skills: "none", noContextFiles: true },
+			policyLaunch: {
+				model: "provider/policy-model",
+				thinking: "low",
+				extensions: [],
+				toolBroker: { mode: "writer" },
+				skills: "none",
+				noContextFiles: true,
+			},
 			trustedLaunch: { version: "pi-subagents.trusted-launch/v1", generation: "g", requestId: "op" },
 		});
 		assert.equal(stripped.forcedCwd, undefined);
