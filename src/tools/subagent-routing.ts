@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { type AgentDefaults, getAgentConfigDir } from "../agents/definitions.ts";
 import { checkToolBroker } from "../broker/preflight.ts";
 import type { SandboxProbe } from "../broker/sandbox-run.ts";
@@ -6,11 +7,7 @@ import { validateWriterWorktree, type WriterWorktree } from "../broker/writer-wo
 import { enforceAgentFrontmatter, resolveSubagentBlocking, shouldUseBackgroundLaunch } from "../launch/policy.ts";
 import { resolveSubagentCwd } from "../launch/runtime-paths.ts";
 import { loadCanonicalPolicy, type RoutingInteractionMode } from "../routing/canonical-policy.ts";
-import {
-	authorizeLaunch,
-	type ManagedRoutingEvidence,
-	type PilotAttemptLedger,
-} from "../routing/launch-authorization.ts";
+import { authorizeLaunch, type ManagedRoutingEvidence } from "../routing/launch-authorization.ts";
 import { verifyPolicyLaunch } from "../routing/resource-verification.ts";
 import { asSubagentToolResult } from "../runtime/state.ts";
 import type { PolicyLaunch, SubagentParamsInput } from "../types.ts";
@@ -22,7 +19,30 @@ export type SubagentRouting = {
 	evidence: ManagedRoutingEvidence | { status: "unmanaged"; reason: string };
 	/** The validated worktree of a managed writer; the launch phase leases it. */
 	writerWorktree?: WriterWorktree;
+	/** The pilot case of a pilot child, as the policy recorded it; the launch phase reserves its attempt. */
+	pilot?: PilotCaseRef;
 };
+
+type PilotCaseRef = { caseId: string; caseDigest: string; allowed: number };
+
+/** JSON with object keys sorted recursively by code unit and no whitespace. */
+function canonicalJson(value: unknown): string {
+	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+	if (value && typeof value === "object") {
+		const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+		return `{${entries.map(([key, child]) => `${JSON.stringify(key)}:${canonicalJson(child)}`).join(",")}}`;
+	}
+	return JSON.stringify(value);
+}
+
+/**
+ * A pilot case's identity for its durable attempts: the digest of its whole
+ * policy record, so any edit to the case is a different case to the store.
+ */
+function pilotCaseRef(caseId: string, record: { attempts: { allowed: number } }): PilotCaseRef {
+	const caseDigest = `sha256:${createHash("sha256").update(canonicalJson(record)).digest("hex")}`;
+	return { caseId, caseDigest, allowed: record.attempts.allowed };
+}
 
 type RoutingOptions = {
 	/** The tool call id; batch children get `<id>:<index>`. */
@@ -170,47 +190,19 @@ export function authorizeSubagentLaunches(
 				);
 			}
 		}
+		const caseId = authorization.evidence.pilotCase;
+		// An authorized launch implies a valid policy that holds its pilot case.
+		const pilot =
+			caseId !== null && policyState.status === "loaded"
+				? pilotCaseRef(caseId, policyState.policy.pilotCases[caseId])
+				: undefined;
 		routing.push({
 			launchId,
 			policyLaunch: authorization.launch,
 			evidence: authorization.evidence,
 			...(writerWorktree ? { writerWorktree } : {}),
+			...(pilot ? { pilot } : {}),
 		});
 	}
 	return routing;
-}
-
-/**
- * Reserve one attempt for every pilot child of an authorized call. When any
- * reservation is refused, the ones already taken are released and the whole
- * call is rejected.
- */
-export function reservePilotAttempts(
-	routing: readonly SubagentRouting[],
-	ledger: PilotAttemptLedger,
-): ReturnType<typeof asSubagentToolResult> | null {
-	const reserved: SubagentRouting[] = [];
-	for (const entry of routing) {
-		const caseId = entry.evidence.status === "managed" ? entry.evidence.pilotCase : null;
-		if (caseId === null) continue;
-		const reservation = ledger.reserve(caseId, entry.launchId);
-		if (reservation.status === "unavailable") {
-			releasePilotAttempts(reserved, ledger);
-			return policyRejection(
-				"pilot_attempts_unavailable",
-				`Pilot case ${caseId} has no attempt available: ${reservation.reason}`,
-			);
-		}
-		reserved.push(entry);
-	}
-	return null;
-}
-
-/** Return the pilot attempts of children whose launch never started. */
-export function releasePilotAttempts(routing: readonly SubagentRouting[], ledger: PilotAttemptLedger): void {
-	for (const entry of routing) {
-		if (entry.evidence.status === "managed" && entry.evidence.pilotCase !== null) {
-			ledger.release(entry.evidence.pilotCase, entry.launchId);
-		}
-	}
 }

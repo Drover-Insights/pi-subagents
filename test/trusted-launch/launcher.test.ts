@@ -1,7 +1,7 @@
-import { realpathSync } from "node:fs";
+import { copyFileSync, realpathSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import type { AgentDefaults } from "../../src/agents/definitions.ts";
-import type { PilotAttemptLedger } from "../../src/routing/launch-authorization.ts";
 import { getLiveSlotCount, resetSpawnWidthForTest } from "../../src/runtime/spawn-width.ts";
 import type { SubagentToolRuntime } from "../../src/tools/subagent-launch.ts";
 import { createTrustedLauncher } from "../../src/trusted-launch/launcher.ts";
@@ -12,6 +12,7 @@ import {
 } from "../../src/trusted-launch/public.ts";
 import type { RunningSubagent, SubagentParamsInput, SubagentResult } from "../../src/types.ts";
 import { assert, createTestDir, writeExecutable } from "../support/index.ts";
+import { readPilotCase } from "../../src/routing/pilot-attempt-store.ts";
 import { emptyAgentDir, writeCanonicalPolicy } from "../support/routing-policy.ts";
 
 function harness(
@@ -21,11 +22,12 @@ function harness(
 		forceSynchronous?: boolean;
 		launchError?: Error;
 		reportedCwd?: string;
-		pilotAttempts?: PilotAttemptLedger;
 		definitionError?: Error;
 		stopError?: Error;
 		/** Resolves the launch only once this promise settles. */
 		launchGate?: Promise<void>;
+		/** The Controller's selected model. */
+		model?: { provider: string; id: string };
 	} = {},
 ) {
 	const stopped: RunningSubagent[] = [];
@@ -79,13 +81,17 @@ function harness(
 			stopped.push(running);
 		},
 		muxUnavailableResult: () => ({ content: [], details: {} }),
-		...(options.pilotAttempts ? { pilotAttempts: options.pilotAttempts } : {}),
 	};
 	const publication = publishTrustedSubagents({
 		launch: createTrustedLauncher({
 			pi: { getThinkingLevel: () => "medium" } as never,
 			runtime,
-			ctx: { hasUI: options.hasUI ?? false, cwd: createTestDir(), sessionManager: {} } as never,
+			ctx: {
+				hasUI: options.hasUI ?? false,
+				cwd: createTestDir(),
+				sessionManager: {},
+				...(options.model ? { model: options.model } : {}),
+			} as never,
 			forceSynchronous: () => options.forceSynchronous ?? false,
 		}),
 		resume: async () => {
@@ -217,6 +223,7 @@ describe("trusted launch through the normal coordinator", () => {
 		const pilot = await descriptor.launch(
 			request({ agent: "pilot-scout", capabilityClass: "literal", pilotCase: "scout-literal-1" }),
 		);
+		// Without a Controller model there is no receipt to write, so no attempt can be reserved.
 		assert.equal(pilot.outcome === "not_started" && pilot.reason, "pilot_attempts_unavailable");
 		assert.equal(launched.length, 0);
 		assert.equal(getLiveSlotCount(), 0);
@@ -224,6 +231,34 @@ describe("trusted launch through the normal coordinator", () => {
 		const managed = await descriptor.launch(request({ agent: "pilot-worker", capabilityClass: "implementation" }));
 		assert.equal(managed.outcome, "launched");
 		assert.equal(launched[0].params.policyLaunch?.model, "openai-codex/gpt-6-sol");
+	});
+
+	it("reserves and commits a pilot attempt under the trusted request id, and refuses its replay", async () => {
+		const agentDir = writeCanonicalPolicy();
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		// A standalone Pi build is a binary; a script must belong to the Pi package.
+		const fakePi = join(createTestDir(), "fake-pi");
+		copyFileSync("/usr/bin/true", fakePi);
+		process.env.PI_SUBAGENT_PI_COMMAND = fakePi;
+		const { descriptor, launched } = harness({
+			agentDefs: { spawning: false, mode: "background", tools: "read,grep,find,ls" },
+			model: { provider: "openai-codex", id: "gpt-6-sol" },
+		});
+		const pilot = request({ agent: "pilot-scout", capabilityClass: "literal", pilotCase: "scout-literal-1" });
+
+		const first = await descriptor.launch(pilot);
+		const replay = await descriptor.launch(pilot);
+
+		assert.equal(first.outcome, "launched");
+		assert.equal(replay.outcome === "not_started" && replay.reason, "pilot_attempts_unavailable");
+		assert.equal(launched.length, 1);
+		assert.deepEqual(
+			readPilotCase(`${agentDir}/pilot-attempts`, "scout-literal-1")?.reservations.map((entry) => [
+				entry.launchId,
+				entry.outcome,
+			]),
+			[["trusted:op_01", "committed"]],
+		);
 	});
 
 	it("refuses when spawn width is exhausted", async () => {

@@ -75,19 +75,24 @@ export function acquireWriterLeases(
  * Return the leases of children whose launch did not start. Only a launch
  * that proved nothing of it runs releases at once; otherwise the lease waits
  * for proof that its execution group ended.
+ *
+ * Resolves true once the failed child's lease is released, or at once when it
+ * had none; never rejects. A lease waiting for proof may never resolve.
  */
-export function releaseUnlaunchedWriterLeases(leases: readonly (WriterLease | undefined)[], error: unknown): void {
+export function releaseUnlaunchedWriterLeases(
+	leases: readonly (WriterLease | undefined)[],
+	error: unknown,
+): Promise<boolean> {
 	const [failed, ...neverStarted] = leases;
 	releaseUnspawned(neverStarted, "an earlier child of the same call failed to launch");
-	if (!failed) return;
-	if (error instanceof WriterSpawnError && !error.nothingRunning) {
-		void releaseWhenEmpty(failed);
-		return;
-	}
+	if (!failed) return Promise.resolve(true);
+	const whenEmpty = () => releaseWhenEmpty(failed).then((release) => release.status === "released");
+	if (error instanceof WriterSpawnError && !error.nothingRunning) return whenEmpty();
 	try {
 		failed.releaseUnspawned(error instanceof Error ? error.message : String(error));
+		return Promise.resolve(true);
 	} catch {
 		// A group or an unproven spawn is recorded: only proof releases it.
-		void releaseWhenEmpty(failed);
+		return whenEmpty();
 	}
 }
