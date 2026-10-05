@@ -49,8 +49,13 @@ function writeProfile(
 	writeFileSync(join(dir, `${name}.md`), content);
 }
 
+// A top-level hook runs after every test of the suite, so restore the
+// suite's agent directory rather than delete it: deleting it would send later
+// tests to the host's ~/.pi/agent.
+const suiteAgentDir = process.env.PI_CODING_AGENT_DIR;
 afterEach(() => {
-	delete process.env.PI_CODING_AGENT_DIR;
+	if (suiteAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+	else process.env.PI_CODING_AGENT_DIR = suiteAgentDir;
 });
 
 describe("verifier profile resolution", () => {

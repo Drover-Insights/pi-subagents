@@ -1,5 +1,5 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 // Process-wide temp root for the test suite. Every later os.tmpdir() call in
@@ -11,6 +11,18 @@ import { join } from "node:path";
 // so single-file runs are covered.
 const root = mkdtempSync(join(tmpdir(), "subagents-test-root-"));
 process.env.TMPDIR = root;
+// Tests never read the host's agent directory (~/.pi/agent): its routing
+// policy, definitions and sessions belong to the user's own Pi install.
+const agentDir = join(root, "agent");
+mkdirSync(agentDir);
+process.env.PI_CODING_AGENT_DIR = agentDir;
+// The verifier venv would otherwise live in that fresh agent directory and be
+// installed again on every run; keep one test-only venv across runs, in this
+// user's own cache directory, where no other user can plant it.
+if (!process.env.PI_SUBAGENT_LLM_VERIFIER_VENV?.trim()) {
+	const cacheHome = process.env.XDG_CACHE_HOME?.trim() || join(homedir(), ".cache");
+	process.env.PI_SUBAGENT_LLM_VERIFIER_VENV = join(cacheHome, "pi-subagents-test", "llm-verifier-venv");
+}
 
 function removeRoot(): void {
 	try {

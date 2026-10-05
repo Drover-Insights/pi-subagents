@@ -1,6 +1,7 @@
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { getAgentConfigDir } from "../agents/definitions.ts";
 import { toolBrokerEnv } from "../broker/env-contract.ts";
+import { requireEarlierGenerationsEmpty, spawnLeasedWriter } from "../broker/writer-spawn.ts";
 import { loadCanonicalPolicy } from "../routing/canonical-policy.ts";
 import { checkManagedChildRequest } from "../routing/launch-authorization.ts";
 import { verifyPolicyLaunch } from "../routing/resource-verification.ts";
@@ -183,6 +184,9 @@ export async function restartSubagentForTimeoutWrapUp(
 			throw new Error(`Routing policy blocked the request: ${verification.message}`);
 		}
 	}
+	if (running.mode === "background" && running.writerLease) {
+		await requireEarlierGenerationsEmpty(running.writerLease);
+	}
 	throwIfAborted(signal);
 	clearSubagentExitSidecar(running.sessionFile);
 	running.autoExit = true;
@@ -195,15 +199,30 @@ export async function restartSubagentForTimeoutWrapUp(
 			...launch.args,
 		]);
 		throwIfAborted(signal);
-		const child = spawn(invocation.command, invocation.args, {
-			...(launch.cwd ? { cwd: launch.cwd } : {}),
-			detached: true,
-			stdio:
-				running.parentClosePolicy === "continue"
-					? (["pipe", "ignore", "ignore"] as const)
-					: (["pipe", "pipe", "pipe"] as const),
-			env: getSubagentChildProcessEnv(invocation, launch.env, resolveDenyEnvPatterns(running.launchMetadata?.denyEnv)),
-		});
+		const stdio: ["pipe", "ignore" | "pipe", "ignore" | "pipe"] =
+			running.parentClosePolicy === "continue" ? ["pipe", "ignore", "ignore"] : ["pipe", "pipe", "pipe"];
+		const env = getSubagentChildProcessEnv(invocation, launch.env, resolveDenyEnvPatterns(running.launchMetadata?.denyEnv));
+		let child: ChildProcess;
+		if (running.writerLease) {
+			const generation = (running.writerGeneration ?? 1) + 1;
+			const writer = await spawnLeasedWriter(running.writerLease, generation, {
+				command: invocation.command,
+				args: invocation.args,
+				cwd: launch.cwd ?? "",
+				env,
+				stdio,
+			});
+			child = writer.child;
+			running.writerGeneration = generation;
+			running.writerInitPid = writer.group.initPid;
+		} else {
+			child = spawn(invocation.command, invocation.args, {
+				...(launch.cwd ? { cwd: launch.cwd } : {}),
+				detached: true,
+				stdio,
+				env,
+			});
+		}
 		running.childProcess = child;
 		child.stdin?.end(launch.prompt);
 		child.unref();

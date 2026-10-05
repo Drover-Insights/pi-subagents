@@ -206,7 +206,10 @@ describe("trusted launch through the normal coordinator", () => {
 
 	it("composes with policy-bound authorization", async () => {
 		process.env.PI_CODING_AGENT_DIR = writeCanonicalPolicy();
-		const { descriptor, launched } = harness({ agentDefs: { spawning: false, mode: "background" } });
+		// Read-only, so the managed child needs no writer worktree; writers are covered in test/routing.
+		const { descriptor, launched } = harness({
+			agentDefs: { spawning: false, mode: "background", tools: "read,grep,find,ls" },
+		});
 
 		const missingClass = await descriptor.launch(request({ agent: "pilot-worker" }));
 		assert.equal(missingClass.outcome === "not_started" && missingClass.reason, "policy_rejected");

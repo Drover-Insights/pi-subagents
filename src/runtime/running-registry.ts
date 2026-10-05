@@ -10,6 +10,7 @@ import {
 	requestSubagentBatchStop,
 	runningSubagents,
 } from "./state.ts";
+import { terminateBackgroundChildProcess } from "./shutdown.ts";
 import { releaseSpawnWidthSlot } from "./spawn-width.ts";
 
 export interface RunningRegistryRuntime {
@@ -115,13 +116,7 @@ export async function stopRunningSubagent(
 	// Always kill the child process/surface regardless of abortController.
 	// abortController only stops the watcher polling loop; the child would
 	// otherwise keep running and deliver stale results via steer.
-	if (running.childProcess?.pid) {
-		try {
-			process.kill(-running.childProcess.pid, "SIGTERM");
-		} catch {
-			running.childProcess.kill("SIGTERM");
-		}
-	}
+	terminateBackgroundChildProcess(running, "SIGTERM");
 	try {
 		await closeSurface(running);
 	} catch {}

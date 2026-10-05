@@ -45,7 +45,7 @@ function sandboxArgv(planArgs: readonly string[], command: readonly string[]): s
 	return ["--seccomp", SECCOMP_FD, ...planArgs, "--", ...command];
 }
 
-function checkBwrapBinary(): string | undefined {
+export function checkBwrapBinary(): string | undefined {
 	let stat: ReturnType<typeof lstatSync>;
 	try {
 		stat = lstatSync(BWRAP_PATH);

@@ -50,6 +50,7 @@ describe("skill visibility annotations", () => {
 		assert.equal((await buildSkillLaunchPlanForTest("all", undefined, dir, dir)).visibilitySpec, "");
 		assert.equal((await buildSkillLaunchPlanForTest(undefined, undefined, dir, dir)).visibilitySpec, "");
 		assert.equal((await buildSkillLaunchPlanForTest("none", undefined, dir, dir)).visibilitySpec, "");
+		writeSkill(dir, "tdd");
 		const plain = await buildSkillLaunchPlanForTest("tdd", undefined, dir, dir);
 		assert.equal(plain.visibilitySpec, "");
 	});

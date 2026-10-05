@@ -49,12 +49,13 @@ const SYSTEM_TREES = ["/proc", "/sys", "/dev", "/run", "/var/run", "/etc", "/usr
 const MAX_CONTROL_FILE_BYTES = 4096;
 const EXECUTABLE_NAME = /^[A-Za-z0-9._-]+$/;
 
-type Repository = { top: string; commonDir?: string; linkFile?: string };
+/** `gitDir` is the checkout's own Git directory: the common one for a main checkout, `<common>/worktrees/<name>` for a linked worktree. */
+export type Repository = { top: string; commonDir?: string; gitDir?: string; linkFile?: string };
 
 class PlanError extends Error {}
 
 /** True when `parent` equals `child` or is a path-segment ancestor of it. */
-function contains(parent: string, child: string): boolean {
+export function contains(parent: string, child: string): boolean {
 	if (parent === child) return true;
 	const prefix = parent.endsWith(sep) ? parent : parent + sep;
 	return child.startsWith(prefix);
@@ -86,7 +87,7 @@ function isKind(path: string, kind: "file" | "directory"): boolean {
 }
 
 /** The trimmed content of a small regular file; symlinks, FIFOs and devices are refused unread. */
-function readControlFile(path: string): string {
+export function readControlFile(path: string): string {
 	let stat: ReturnType<typeof lstatSync>;
 	try {
 		stat = lstatSync(path);
@@ -122,7 +123,7 @@ function linkedWorktree(top: string, dotGit: string): Repository {
 	if (commondir !== commonDir || backLink !== dotGit) {
 		throw new PlanError(`the Git metadata of ${dotGit} does not lead back to it`);
 	}
-	return { top, commonDir, linkFile: dotGit };
+	return { top, commonDir, gitDir, linkFile: dotGit };
 }
 
 function discoverRepository(realCwd: string): Repository {
@@ -139,11 +140,20 @@ function discoverRepository(realCwd: string): Repository {
 		}
 		if (stat?.isDirectory()) {
 			if (!isGitDirectory(dotGit)) throw new PlanError(`malformed Git directory: ${dotGit}`);
-			return { top: dir, commonDir: dotGit };
+			return { top: dir, commonDir: dotGit, gitDir: dotGit };
 		}
 		if (stat?.isFile()) return linkedWorktree(dir, dotGit);
 		if (stat) throw new PlanError(`unsupported .git entry: ${dotGit}`);
 		if (dirname(dir) === dir) return { top: realCwd };
+	}
+}
+
+/** The repository holding a real path, found by reading the filesystem; never throws. */
+export function findRepository(realCwd: string): { status: "found"; repository: Repository } | { status: "rejected"; message: string } {
+	try {
+		return { status: "found", repository: discoverRepository(realCwd) };
+	} catch (error) {
+		return { status: "rejected", message: error instanceof Error ? error.message : String(error) };
 	}
 }
 

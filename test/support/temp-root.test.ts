@@ -26,6 +26,13 @@ function runFixture(extra: Record<string, string> = {}) {
 	});
 }
 
+describe("test agent directory isolation", () => {
+	it("points the agent directory into the temp root, never the host's ~/.pi/agent", () => {
+		const agentDir = process.env.PI_CODING_AGENT_DIR ?? "";
+		assert.ok(agentDir.startsWith(`${process.env.TMPDIR}/`), agentDir);
+	});
+});
+
 describe("test temp directory cleanup", () => {
 	beforeEach(() => {
 		privateTmp = mkdtempSync(join(tmpdir(), "temp-root-probe-"));
