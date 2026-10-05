@@ -2,14 +2,22 @@ import { randomUUID } from "node:crypto";
 import {
 	TRUSTED_LAUNCH_REGISTRY_KEY,
 	TRUSTED_LAUNCH_VERSION,
+	TRUSTED_TERMINATE_UNKNOWN_REASONS,
 	type TrustedLaunchRequestV1,
 	type TrustedLaunchResultV1,
 	type TrustedResumeRequestV1,
 	type TrustedResumeResultV1,
 	type TrustedSubagentsDescriptor,
 	type TrustedSubagentsResolution,
+	type TrustedTerminateRequestV1,
+	type TrustedTerminateResultV1,
+	type TrustedTerminateUnknownReason,
 } from "./contract.ts";
-import { validateTrustedLaunchRequest, validateTrustedResumeRequest } from "./request.ts";
+import {
+	validateTrustedLaunchRequest,
+	validateTrustedResumeRequest,
+	validateTrustedTerminateRequest,
+} from "./request.ts";
 
 /** The publishing descriptor, as its launcher sees it. */
 interface TrustedLaunchOwner {
@@ -24,9 +32,55 @@ export type TrustedLauncher = (request: TrustedLaunchRequestV1, owner: TrustedLa
 /** Resumes one validated request. A throw means the resume outcome is unknown. */
 export type TrustedResumer = (request: TrustedResumeRequestV1, owner: TrustedLaunchOwner) => Promise<TrustedResumeResultV1>;
 
+/** Terminates one validated request. A throw means the outcome is unknown. */
+export type TrustedTerminator = (
+	request: TrustedTerminateRequestV1,
+	owner: TrustedLaunchOwner,
+) => Promise<TrustedTerminateResultV1>;
+
 export interface TrustedSubagentsHandlers {
 	launch: TrustedLauncher;
 	resume: TrustedResumer;
+	terminate: TrustedTerminator;
+}
+
+const UNKNOWN_REASONS: ReadonlySet<string> = new Set(TRUSTED_TERMINATE_UNKNOWN_REASONS);
+
+/**
+ * Accept a terminator's result only when it has the contract's shape and an
+ * end it reports names exactly the requested run. Returns a fresh copy.
+ */
+function readTerminateResult(
+	result: unknown,
+	request: TrustedTerminateRequestV1,
+): TrustedTerminateResultV1 | undefined {
+	if (typeof result !== "object" || result === null) return undefined;
+	const value = result as Record<string, unknown>;
+	if (value.outcome === "terminated" || value.outcome === "already_terminal") {
+		if (
+			value.requestId !== request.requestId ||
+			value.runId !== request.runId ||
+			value.sessionFile !== request.sessionFile
+		) {
+			return undefined;
+		}
+		return { outcome: value.outcome, requestId: request.requestId, runId: request.runId, sessionFile: request.sessionFile };
+	}
+	if (
+		value.outcome === "unknown" &&
+		typeof value.reason === "string" &&
+		UNKNOWN_REASONS.has(value.reason) &&
+		typeof value.message === "string" &&
+		typeof value.stopRequested === "boolean"
+	) {
+		return {
+			outcome: "unknown",
+			reason: value.reason as TrustedTerminateUnknownReason,
+			message: value.message,
+			stopRequested: value.stopRequested,
+		};
+	}
+	return undefined;
 }
 
 export interface TrustedSubagentsPublication {
@@ -111,6 +165,25 @@ export function publishTrustedSubagents(handlers: TrustedSubagentsHandlers): Tru
 			guarded(input, validateTrustedLaunchRequest, handlers.launch),
 		resume: (input: unknown): Promise<TrustedResumeResultV1> =>
 			guarded(input, validateTrustedResumeRequest, handlers.resume),
+		terminate: async (input: unknown): Promise<TrustedTerminateResultV1> => {
+			// A termination has no "not started": every outcome that does not prove
+			// the run ended is unknown, so the caller keeps its slot occupied.
+			const outcome = await guarded(input, validateTrustedTerminateRequest, async (request, owner) => {
+				const result = readTerminateResult(await handlers.terminate(request, owner), request);
+				return (
+					result ?? {
+						outcome: "unknown" as const,
+						reason: "malformed_response" as const,
+						message: "The terminator returned a result outside the contract; the run may have been stopped.",
+						stopRequested: true,
+					}
+				);
+			});
+			if (outcome.outcome === "not_started") return { ...outcome, outcome: "unknown", stopRequested: false };
+			if (outcome.outcome !== "unknown" || "stopRequested" in outcome) return outcome as TrustedTerminateResultV1;
+			// The terminator threw: it may have requested a stop first.
+			return { outcome: "unknown", reason: "terminator_failed", message: outcome.message, stopRequested: true };
+		},
 	});
 	record = Object.freeze({ descriptor });
 	(globalThis as GlobalRegistry)[TRUSTED_LAUNCH_REGISTRY_KEY] = record;

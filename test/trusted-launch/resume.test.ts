@@ -56,6 +56,9 @@ function harness(options: { forceSynchronous?: boolean; onWire?: () => void } = 
 			runtime,
 			forceSynchronous: () => options.forceSynchronous ?? false,
 		}),
+		terminate: async () => {
+			throw new Error("terminate is not under test");
+		},
 	});
 	publications.push(publication);
 	return { publication, descriptor: publication.descriptor, capture, wired, stopped, runtime };

@@ -7,6 +7,7 @@ import type { SubagentToolRuntime } from "../../src/tools/subagent-launch.ts";
 import { createFakeTrustedSubagents } from "../../src/trusted-launch/fake.ts";
 import { createTrustedLauncher } from "../../src/trusted-launch/launcher.ts";
 import { publishTrustedSubagents } from "../../src/trusted-launch/registry.ts";
+import { createTrustedTerminator } from "../../src/trusted-launch/terminator.ts";
 import {
 	resolveTrustedSubagents,
 	TRUSTED_LAUNCH_REGISTRY_KEY,
@@ -15,6 +16,7 @@ import {
 } from "../../src/trusted-launch/public.ts";
 import type { RunningSubagent, SubagentParamsInput, SubagentResult } from "../../src/types.ts";
 import { assert, createTestDir } from "../support/index.ts";
+import "../support/ambient-spawn-grant.ts";
 import { emptyAgentDir } from "../support/routing-policy.ts";
 
 const disposers: (() => void)[] = [];
@@ -59,6 +61,11 @@ function realDescriptor(): TrustedSubagentsDescriptor {
 		resume: async () => {
 			throw new Error("resume is not under test");
 		},
+		terminate: createTrustedTerminator({
+			runningSubagents: new Map(),
+			completedSubagentResults: new Map(),
+			stopRunningSubagent: async () => {},
+		}),
 	});
 	disposers.push(() => publication.dispose());
 	return publication.descriptor;
@@ -121,6 +128,25 @@ for (const [label, create] of [
 			assert.deepEqual(
 				outcomes.map((outcome) => (outcome.outcome === "not_started" ? outcome.reason : outcome.outcome)),
 				["unsupported_version", "effective_cwd_invalid", "invalid_request", "agent_not_found", "mode_mismatch"],
+			);
+		});
+
+		it("terminates nothing it does not own and refuses a request naming a pid", async () => {
+			const descriptor = create();
+			const terminate = {
+				requestVersion: TRUSTED_LAUNCH_VERSION,
+				requestId: "op_stop_01",
+				runId: "run-404",
+				sessionFile: "/sessions/run-404.jsonl",
+				launchRequestId: "op_01",
+			};
+			const outcomes = await Promise.all([descriptor.terminate(terminate), descriptor.terminate({ ...terminate, pid: 1 })]);
+			assert.deepEqual(
+				outcomes.map((outcome) => outcome.outcome === "unknown" && [outcome.reason, outcome.stopRequested]),
+				[
+					["ownership_unavailable", false],
+					["invalid_request", false],
+				],
 			);
 		});
 
@@ -207,6 +233,104 @@ describe("package fake scripting", () => {
 		fake.dispose();
 		const disposed = await fake.descriptor.resume(resume);
 		assert.equal(disposed.outcome === "not_started" && disposed.reason, "descriptor_disposed");
+	});
+
+	it("terminates only a run it launched, once, and scripts other outcomes", async () => {
+		const fake = createFakeTrustedSubagents({
+			agents: { worker: "background" },
+			respondTerminate: (req, index) =>
+				index === 0
+					? { outcome: "unknown", reason: "timeout", message: `slow ${req.runId}`, stopRequested: true }
+					: ({ outcome: "terminated", runId: "fake-run-9" } as never),
+		});
+		disposers.push(() => fake.dispose());
+		const launched = await fake.descriptor.launch(request());
+		assert.equal(launched.outcome, "launched");
+		if (launched.outcome !== "launched") return;
+		const terminate = {
+			requestVersion: TRUSTED_LAUNCH_VERSION,
+			requestId: "op_stop_01",
+			runId: launched.runId,
+			sessionFile: launched.sessionFile,
+			launchRequestId: "op_01",
+		};
+		assert.deepEqual(await fake.descriptor.terminate(terminate), {
+			outcome: "unknown",
+			reason: "timeout",
+			message: "slow fake-run-1",
+			stopRequested: true,
+		});
+		const malformed = await fake.descriptor.terminate(terminate);
+		assert.equal(malformed.outcome === "unknown" && malformed.reason, "malformed_response");
+		assert.equal(fake.terminateRequests.length, 2);
+	});
+
+	it("terminates a run it launched once, then reports it already terminal", async () => {
+		const fake = createFakeTrustedSubagents({ agents: { worker: "background" } });
+		disposers.push(() => fake.dispose());
+		const launched = await fake.descriptor.launch(request());
+		const other = await fake.descriptor.launch(request({ requestId: "op_02" }));
+		assert.equal(launched.outcome === "launched" && other.outcome === "launched", true);
+		if (launched.outcome !== "launched" || other.outcome !== "launched") return;
+		const terminate = {
+			requestVersion: TRUSTED_LAUNCH_VERSION,
+			requestId: "op_stop_01",
+			runId: launched.runId,
+			sessionFile: launched.sessionFile,
+			launchRequestId: "op_01",
+		};
+		const outcomes = await Promise.all([
+			fake.descriptor.terminate({ ...terminate, runId: "fake-run-404" }),
+			fake.descriptor.terminate({ ...terminate, sessionFile: other.sessionFile }),
+			fake.descriptor.terminate({ ...terminate, launchRequestId: "op_02" }),
+			fake.descriptor.terminate({ ...terminate, pid: 1234 }),
+		]);
+		assert.deepEqual(
+			outcomes.map((outcome) => (outcome.outcome === "unknown" ? outcome.reason : outcome.outcome)),
+			["ownership_unavailable", "identity_mismatch", "identity_mismatch", "invalid_request"],
+		);
+		assert.deepEqual(await fake.descriptor.terminate(terminate), {
+			outcome: "terminated",
+			requestId: "op_stop_01",
+			runId: launched.runId,
+			sessionFile: launched.sessionFile,
+		});
+		const again = await fake.descriptor.terminate({ ...terminate, requestId: "op_stop_02" });
+		assert.equal(again.outcome, "already_terminal");
+		const sibling = await fake.descriptor.terminate({
+			...terminate,
+			runId: other.runId,
+			sessionFile: other.sessionFile,
+			launchRequestId: "op_02",
+		});
+		assert.equal(sibling.outcome, "terminated", "the sibling was untouched by the first termination");
+	});
+
+	it("never reports an interactive run ended, as the real descriptor never does", async () => {
+		const fake = createFakeTrustedSubagents({ agents: { worker: "interactive" } });
+		disposers.push(() => fake.dispose());
+		const launched = await fake.descriptor.launch(request({ mode: "interactive" }));
+		assert.equal(launched.outcome, "launched");
+		if (launched.outcome !== "launched") return;
+		const result = await fake.descriptor.terminate({
+			requestVersion: TRUSTED_LAUNCH_VERSION,
+			requestId: "op_stop_01",
+			runId: launched.runId,
+			sessionFile: launched.sessionFile,
+			launchRequestId: "op_01",
+		});
+		assert.equal(result.outcome === "unknown" && result.reason, "termination_unconfirmed");
+		assert.equal(result.outcome === "unknown" && result.stopRequested, true);
+		// Once finished, a further call requests no stop, as for a finished real run.
+		const again = await fake.descriptor.terminate({
+			requestVersion: TRUSTED_LAUNCH_VERSION,
+			requestId: "op_stop_02",
+			runId: launched.runId,
+			sessionFile: launched.sessionFile,
+			launchRequestId: "op_01",
+		});
+		assert.equal(again.outcome === "unknown" && again.reason, "termination_unconfirmed");
+		assert.equal(again.outcome === "unknown" && again.stopRequested, false);
 	});
 
 	it("gives interactive launches a deterministic surface", async () => {

@@ -45,12 +45,15 @@ const publications: { dispose(): void }[] = [];
 function clearRegistrySlot() {
 	delete (globalThis as Record<symbol, unknown>)[TRUSTED_LAUNCH_REGISTRY_KEY];
 }
-/** Resume has its own suite; these tests exercise launch. */
+/** Resume and terminate have their own suites; these tests exercise launch. */
 async function unusedResume(): Promise<never> {
 	throw new Error("resume is not under test");
 }
+async function unusedTerminate(): Promise<never> {
+	throw new Error("terminate is not under test");
+}
 function publish(launcher: TrustedLauncher) {
-	const publication = publishTrustedSubagents({ launch: launcher, resume: unusedResume });
+	const publication = publishTrustedSubagents({ launch: launcher, resume: unusedResume, terminate: unusedTerminate });
 	publications.push(publication);
 	return publication;
 }
@@ -94,7 +97,7 @@ describe("trusted launch registry", () => {
 	it("refuses a duplicate live publication", () => {
 		publish(recordingLauncher().launcher);
 		assert.throws(
-			() => publishTrustedSubagents({ launch: recordingLauncher().launcher, resume: unusedResume }),
+			() => publishTrustedSubagents({ launch: recordingLauncher().launcher, resume: unusedResume, terminate: unusedTerminate }),
 			/already published/,
 		);
 	});

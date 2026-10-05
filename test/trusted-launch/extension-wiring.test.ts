@@ -1,13 +1,16 @@
+import { spawn } from "node:child_process";
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { resetSubagentBatchStopRequest } from "../../src/runtime/state.ts";
+import { resetSubagentBatchStopRequest, runningSubagents } from "../../src/runtime/state.ts";
 import {
 	resolveTrustedSubagents,
 	TRUSTED_LAUNCH_REGISTRY_KEY,
 	TRUSTED_LAUNCH_VERSION,
 	type TrustedSubagentsDescriptor,
 } from "../../src/trusted-launch/public.ts";
+import { probeProcessGroup } from "../../src/trusted-launch/terminator.ts";
+import type { RunningSubagent } from "../../src/types.ts";
 import {
 	afterEach,
 	assert,
@@ -127,6 +130,64 @@ describe("trusted launch descriptor lifecycle", () => {
 		await extension.fire("session_shutdown", { reason: "quit" });
 		const retired = await descriptor.resume(resume);
 		assert.equal(retired.outcome === "not_started" && retired.reason, "descriptor_disposed");
+	});
+
+	it("publishes a terminate that stops only runs this session owns, through its own stop path", async () => {
+		const extension = loadExtension();
+		await extension.fire("session_start", { reason: "startup" });
+		const descriptor = current();
+		assert.ok(descriptor);
+		const fixture = trustedSessionFixture();
+		// One process, so its exit is its whole group's end.
+		const child = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
+		const running: RunningSubagent = {
+			id: "run-wired",
+			name: "task-worker",
+			task: "Work",
+			mode: "background",
+			executionState: "running",
+			deliveryState: "detached",
+			parentClosePolicy: "terminate",
+			startTime: Date.now(),
+			sessionFile: fixture.sessionFile,
+			childProcess: child,
+			completionPromise: new Promise((resolve) =>
+				child.once("exit", (code) => resolve({ name: "task-worker", task: "Work", summary: "", exitCode: code ?? 1, elapsed: 0 })),
+			),
+			launchMetadata: { cwd: fixture.cwd, trustedLaunch: fixture.provenance } as RunningSubagent["launchMetadata"],
+		};
+		runningSubagents.set(running.id, running);
+		// A detached child becomes its group's leader only after the fork returns.
+		for (let attempt = 0; probeProcessGroup(child.pid!) !== "present"; attempt++) {
+			assert.ok(attempt < 200, "the child's process group never appeared");
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		const terminate = {
+			requestVersion: TRUSTED_LAUNCH_VERSION,
+			requestId: "op_stop_01",
+			runId: "run-wired",
+			sessionFile: fixture.sessionFile,
+			launchRequestId: fixture.provenance.requestId,
+		};
+		try {
+			const notOwned = await descriptor.terminate({ ...terminate, runId: "run-elsewhere" });
+			assert.equal(notOwned.outcome === "unknown" && notOwned.reason, "ownership_unavailable");
+			assert.deepEqual(await descriptor.terminate(terminate), {
+				outcome: "terminated",
+				requestId: "op_stop_01",
+				runId: "run-wired",
+				sessionFile: fixture.sessionFile,
+			});
+
+			await extension.fire("session_shutdown", { reason: "quit" });
+			const retired = await descriptor.terminate(terminate);
+			assert.equal(retired.outcome === "unknown" && retired.reason, "descriptor_disposed");
+		} finally {
+			runningSubagents.delete(running.id);
+			try {
+				process.kill(-child.pid!, "SIGKILL");
+			} catch {}
+		}
 	});
 
 	it("keeps the descriptor through the coordinator-only turn stop", async () => {

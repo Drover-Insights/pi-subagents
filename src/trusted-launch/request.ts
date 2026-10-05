@@ -7,6 +7,7 @@ import {
 	type TrustedLaunchRequestV1,
 	type TrustedResumeRejection,
 	type TrustedResumeRequestV1,
+	type TrustedTerminateRequestV1,
 } from "./contract.ts";
 import { getEffectiveCwdError } from "./effective-cwd.ts";
 
@@ -159,6 +160,40 @@ export function validateTrustedResumeRequest(raw: unknown): TrustedResumeRequest
 		return invalid("task must be a non-empty string when present.");
 	}
 	const request = input as unknown as TrustedResumeRequestV1;
+	if (!REQUEST_ID.test(request.requestId)) return invalid("requestId is malformed.");
+	if (!REQUEST_ID.test(request.launchRequestId)) return invalid("launchRequestId is malformed.");
+	if (!isAbsolute(request.sessionFile)) return invalid("sessionFile must be absolute.");
+	return { ok: true, request: Object.freeze(request) };
+}
+
+const TERMINATE_KEYS = new Set<string>(["requestVersion", "requestId", "runId", "sessionFile", "launchRequestId"]);
+
+export type TrustedTerminateRequestValidation =
+	| { ok: true; request: TrustedTerminateRequestV1 }
+	| { ok: false; reason: "invalid_request" | "unsupported_version"; message: string };
+
+/**
+ * Validate a trusted termination request before any effect. It names a run
+ * only by the identities a launch or resume returned; any other key, such as
+ * a pid or a pane, is refused. Never throws; returns a frozen snapshot.
+ */
+export function validateTrustedTerminateRequest(raw: unknown): TrustedTerminateRequestValidation {
+	const invalid = (message: string): TrustedTerminateRequestValidation => ({ ok: false, reason: "invalid_request", message });
+	const input = snapshotPlainData(raw);
+	if (!input) return invalid("The request must be a plain object of data properties.");
+	if (input.requestVersion !== TRUSTED_LAUNCH_VERSION) {
+		return {
+			ok: false,
+			reason: "unsupported_version",
+			message: `Unsupported request version; expected ${TRUSTED_LAUNCH_VERSION}.`,
+		};
+	}
+	const unknownKeys = Object.keys(input).filter((key) => !TERMINATE_KEYS.has(key));
+	if (unknownKeys.length > 0) return invalid(`Unknown request keys: ${unknownKeys.join(", ")}.`);
+	for (const key of ["requestId", "runId", "sessionFile", "launchRequestId"] as const) {
+		if (typeof input[key] !== "string" || input[key] === "") return invalid(`${key} must be a non-empty string.`);
+	}
+	const request = input as unknown as TrustedTerminateRequestV1;
 	if (!REQUEST_ID.test(request.requestId)) return invalid("requestId is malformed.");
 	if (!REQUEST_ID.test(request.launchRequestId)) return invalid("launchRequestId is malformed.");
 	if (!isAbsolute(request.sessionFile)) return invalid("sessionFile must be absolute.");

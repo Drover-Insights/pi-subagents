@@ -125,6 +125,51 @@ export type TrustedResumeResultV1 =
 	/** Resume began and its result is incomplete; a child may exist. */
 	| { outcome: "unknown"; reason: string; message: string; partial?: { runId?: string; sessionFile?: string } };
 
+/**
+ * Terminate one run this seam launched or resumed, named by its exact
+ * runtime and session identities. Never a pid, pane, name, or model text.
+ */
+export interface TrustedTerminateRequestV1 {
+	readonly requestVersion: typeof TRUSTED_LAUNCH_VERSION;
+	/** This termination's operation identity; same rule as a launch `requestId`. */
+	readonly requestId: string;
+	/** The `runId` a `launched` or `resumed` result returned. */
+	readonly runId: string;
+	/** Absolute session file that result returned. */
+	readonly sessionFile: string;
+	/** The `requestId` of the launch that created the session. */
+	readonly launchRequestId: string;
+}
+
+/** Why a termination could not prove the run ended. */
+export const TRUSTED_TERMINATE_UNKNOWN_REASONS = [
+	"descriptor_disposed",
+	"descriptor_replaced",
+	"unsupported_version",
+	"invalid_request",
+	"identity_mismatch",
+	"ownership_unavailable",
+	"run_exiting",
+	"termination_unconfirmed",
+	"stop_failed",
+	"timeout",
+	"malformed_response",
+	"terminator_failed",
+] as const;
+
+export type TrustedTerminateUnknownReason = (typeof TRUSTED_TERMINATE_UNKNOWN_REASONS)[number];
+
+export type TrustedTerminateResultV1 =
+	/** This call stopped the run, and its process group is proven gone. */
+	| { outcome: "terminated"; requestId: string; runId: string; sessionFile: string }
+	/** The run had already ended before this call, and its process group is proven gone. */
+	| { outcome: "already_terminal"; requestId: string; runId: string; sessionFile: string }
+	/**
+	 * Nothing is proven; the run may still hold its slot. `stopRequested` is
+	 * false only when this call is known to have requested no stop.
+	 */
+	| { outcome: "unknown"; reason: TrustedTerminateUnknownReason; message: string; stopRequested: boolean };
+
 export interface TrustedSubagentsDescriptor {
 	readonly version: typeof TRUSTED_LAUNCH_VERSION;
 	/** Unique per publication; a reload publishes a new generation. */
@@ -135,6 +180,8 @@ export interface TrustedSubagentsDescriptor {
 	launch(request: unknown): Promise<TrustedLaunchResultV1>;
 	/** Never throws. Validates the request and the persisted authority before any effect. */
 	resume(request: unknown): Promise<TrustedResumeResultV1>;
+	/** Never throws. Requests at most one stop, never retries, and reports only proven ends. */
+	terminate(request: unknown): Promise<TrustedTerminateResultV1>;
 }
 
 export type TrustedSubagentsResolution =
