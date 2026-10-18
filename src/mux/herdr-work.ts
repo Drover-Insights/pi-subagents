@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { WorkReporter } from "../runtime/work-reporting.ts";
+import type { ReportDelivery, WorkReporter } from "../runtime/work-reporting.ts";
 import { runHerdrJsonAsync } from "./herdr.ts";
 
 const TOKEN = "pi_subagents_work_v1";
@@ -43,8 +43,20 @@ export async function createHerdrWorkReporter(
 	}
 }
 
+/** Herdr acknowledges a metadata write with a `result` object; anything else is not delivered. */
+function acknowledged(reply: unknown): boolean {
+	return record(reply) && record(reply.result);
+}
+
 function makeReporter(pane: string, session: string, call: (args: string[]) => Promise<unknown>): WorkReporter {
 	let stopped = false;
+	let delivery: ReportDelivery = "pending";
+	let listener: ((state: ReportDelivery) => void) | undefined;
+	function setDelivery(state: ReportDelivery): void {
+		if (state === delivery) return;
+		delivery = state;
+		listener?.(state);
+	}
 	let stopping: Promise<void> | undefined;
 	let count = 0;
 	let lastCount: number | undefined;
@@ -60,11 +72,14 @@ function makeReporter(pane: string, session: string, call: (args: string[]) => P
 			if (stopped || (!refresh && lastCount === count)) return;
 			const value = count;
 			try {
-				await call([...prefix, "--token", `${TOKEN}=${sessionHash}:${value}:${Date.now() + TTL_MS}`]);
+				const reply = await call([...prefix, "--token", `${TOKEN}=${sessionHash}:${value}:${Date.now() + TTL_MS}`]);
+				if (!acknowledged(reply)) throw new Error("Herdr did not acknowledge the write");
 				lastCount = value;
+				setDelivery("delivered");
 			} catch {
-				// Fail open. Only an outstanding-work heartbeat retries, at most
-				// once per interval; zero stops renewal and stale metadata expires.
+				// Fail open, but visibly. Only an outstanding-work heartbeat retries,
+				// at most once per interval; zero stops renewal and stale metadata expires.
+				setDelivery("degraded");
 			}
 		}).catch(() => {});
 		return pending;
@@ -79,6 +94,10 @@ function makeReporter(pane: string, session: string, call: (args: string[]) => P
 	}
 
 	return {
+		delivery: () => delivery,
+		watchDelivery(watch) {
+			listener = watch;
+		},
 		publish(value) {
 			if (stopped) return pending;
 			count = value;
@@ -92,7 +111,12 @@ function makeReporter(pane: string, session: string, call: (args: string[]) => P
 			if (timer) clearTimeout(timer);
 			timer = undefined;
 			stopping = pending.then(async () => {
-				try { await call([...prefix, "--clear-token", TOKEN]); } catch {}
+				// An unacknowledged final clear may leave metadata until its TTL expires.
+				try {
+					setDelivery(acknowledged(await call([...prefix, "--clear-token", TOKEN])) ? "delivered" : "unknown");
+				} catch {
+					setDelivery("unknown");
+				}
 			});
 			return stopping;
 		},

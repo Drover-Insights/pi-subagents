@@ -1,3 +1,4 @@
+import { reportManagedRecovery } from "./runtime/managed-recovery.ts";
 import { registerOutstandingWorkReporting } from "./runtime/work-reporting.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "node:fs";
@@ -156,7 +157,10 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 	if (getEffectiveAgentDefinitions().length === 0) return;
 
 	publishRunningSubagentCount(() => runningSubagents.size);
-	const workReporting = registerOutstandingWorkReporting(pi);
+	const workReporting = registerOutstandingWorkReporting(pi, undefined, (state) => {
+		if (!latestContext?.hasUI) return;
+		latestContext.ui.setStatus("subagents-herdr-report", state === "delivered" ? undefined : `Herdr work report ${state}`);
+	});
 
 	function attachWidgetContext(ctx: ExtensionContext) {
 		widgetManager.attachContext(ctx);
@@ -248,6 +252,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 		initializeSpawnWidthForSession();
 		void workReporting.start(ctx);
 		latestContext = ctx;
+		reportManagedRecovery(ctx);
 		publishTrustedLaunch(ctx);
 		resetSubagentBatchStopRequest();
 		applySubagentLineage(ctx);

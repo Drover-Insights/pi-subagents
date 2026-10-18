@@ -171,3 +171,82 @@ test("long session paths survive Herdr's 80-character token limit with count and
 		assert.ok(Number(stored.split(":")[2]) > Date.now());
 	} finally { await reporter.stop(); }
 });
+
+test("a write counts as delivered only when Herdr acknowledges it; otherwise reporting is degraded", async () => {
+	let reply: unknown = { result: {} };
+	const reporter = await createHerdrWorkReporter(context, environment, async (args) => {
+		if (args[0] === "status") return { running: true, compatible: true, protocol: 22 };
+		if (args[1] === "current") return { result: { pane: { pane_id: "pane-owned" } } };
+		if (reply instanceof Error) throw reply;
+		return reply as Record<string, unknown>;
+	});
+	assert.ok(reporter);
+	assert.equal(reporter.delivery(), "pending");
+	await reporter.publish(1);
+	assert.equal(reporter.delivery(), "delivered");
+	for (const unacknowledged of [{}, { result: null }, { result: "ok" }, new Error("socket unavailable")]) {
+		reply = { result: {} };
+		await reporter.publish(0);
+		reply = unacknowledged;
+		await reporter.publish(2);
+		assert.equal(reporter.delivery(), "degraded", JSON.stringify(unacknowledged));
+	}
+	reply = { result: {} };
+	await reporter.publish(3);
+	assert.equal(reporter.delivery(), "delivered");
+	await reporter.stop();
+	assert.equal(reporter.delivery(), "delivered");
+});
+
+test("a final clear Herdr does not acknowledge leaves delivery unknown, and never throws", async () => {
+	for (const failure of [{}, new Error("socket unavailable")]) {
+		const reporter = await createHerdrWorkReporter(context, environment, async (args) => {
+			if (args[0] === "status") return { running: true, compatible: true, protocol: 22 };
+			if (args[1] === "current") return { result: { pane: { pane_id: "pane-owned" } } };
+			if (args.includes("--clear-token")) {
+				if (failure instanceof Error) throw failure;
+				return failure;
+			}
+			return { result: {} };
+		});
+		assert.ok(reporter);
+		await reporter.publish(1);
+		await reporter.stop();
+		assert.equal(reporter.delivery(), "unknown");
+	}
+});
+
+test("an acknowledged final clear after a degraded write leaves delivery delivered", async () => {
+	let fail = true;
+	const reporter = await createHerdrWorkReporter(context, environment, async (args) => {
+		if (args[0] === "status") return { running: true, compatible: true, protocol: 22 };
+		if (args[1] === "current") return { result: { pane: { pane_id: "pane-owned" } } };
+		if (fail && args.includes("--token")) return {};
+		return { result: {} };
+	});
+	assert.ok(reporter);
+	await reporter.publish(1);
+	assert.equal(reporter.delivery(), "degraded");
+	fail = false;
+	await reporter.stop();
+	assert.equal(reporter.delivery(), "delivered");
+});
+
+test("a heartbeat write notifies the reporter's delivery listener", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	let fail = false;
+	const reporter = await createHerdrWorkReporter(context, environment, async (args) => {
+		if (args[0] === "status") return { running: true, compatible: true, protocol: 22 };
+		if (args[1] === "current") return { result: { pane: { pane_id: "pane-owned" } } };
+		return fail ? {} : { result: {} };
+	});
+	assert.ok(reporter);
+	const seen: string[] = [];
+	reporter.watchDelivery?.((state) => seen.push(state));
+	await reporter.publish(1);
+	fail = true;
+	t.mock.timers.tick(10_000);
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.deepEqual(seen, ["delivered", "degraded"]);
+	await reporter.stop();
+});

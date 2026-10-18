@@ -1,7 +1,7 @@
 import {
 	resolveResumeHerdrPlacementPolicy,
 	resolveResumeZellijPlacementPolicy,
-} from "../../src/runtime/resume-service.ts";
+} from "../../src/runtime/resume-placement.ts";
 import {
 	assert,
 	createTestDir,

@@ -9,6 +9,7 @@ import { resolveSubagentCwd } from "../launch/runtime-paths.ts";
 import { loadCanonicalPolicy, type RoutingInteractionMode } from "../routing/canonical-policy.ts";
 import { authorizeLaunch, type ManagedRoutingEvidence } from "../routing/launch-authorization.ts";
 import { verifyPolicyLaunch } from "../routing/resource-verification.ts";
+import { canonicalJson } from "../routing/write-once-records.ts";
 import { asSubagentToolResult } from "../runtime/state.ts";
 import type { PolicyLaunch, SubagentParamsInput } from "../types.ts";
 
@@ -24,16 +25,6 @@ export type SubagentRouting = {
 };
 
 type PilotCaseRef = { caseId: string; caseDigest: string; allowed: number };
-
-/** JSON with object keys sorted recursively by code unit and no whitespace. */
-function canonicalJson(value: unknown): string {
-	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-	if (value && typeof value === "object") {
-		const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-		return `{${entries.map(([key, child]) => `${JSON.stringify(key)}:${canonicalJson(child)}`).join(",")}}`;
-	}
-	return JSON.stringify(value);
-}
 
 /**
  * A pilot case's identity for its durable attempts: the digest of its whole

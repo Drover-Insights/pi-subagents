@@ -1,3 +1,4 @@
+import { StopRefusedError } from "../runtime/shutdown.ts";
 import type { CompletedSubagentResult, RunningSubagent } from "../types.ts";
 import {
 	TRUSTED_LAUNCH_VERSION,
@@ -123,6 +124,7 @@ export function createTrustedTerminator(deps: TrustedTerminatorDeps): TrustedTer
 		try {
 			await stop;
 		} catch (error) {
+			if (error instanceof StopRefusedError) return unknown("ownership_unavailable", error.message, false);
 			return unknown(
 				"stop_failed",
 				`Stopping the run failed: ${error instanceof Error ? error.message : String(error)}`,
