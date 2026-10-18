@@ -149,6 +149,8 @@ export interface SubagentResult {
 	timeoutWrapUp?: { kind: SubagentTimeoutKind; seconds: number; threshold: number };
 	error?: string;
 	errorMessage?: string;
+	/** The child's retained stderr tail, kept only for a failure that carries `errorMessage`. */
+	stderrTail?: string;
 	ping?: SubagentPing;
 }
 

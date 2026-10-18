@@ -12,6 +12,7 @@ import { resolveDenyEnvPatterns } from "../launch/child-env.ts";
 import { getCompletionHelperPath } from "../launch/completion-helper.ts";
 import { CHILD_CONTEXT_BOUNDARY_SYSTEM_PROMPT } from "../launch/context-boundary.ts";
 import { parseEnvString } from "../launch/env.ts";
+import { rememberOutputTail } from "../launch/output-tail.ts";
 import {
 	getExtensionLaunchArgs,
 	getManagedResourceLaunchArgs,
@@ -67,10 +68,6 @@ function waitForDelay(ms: number, signal?: AbortSignal): Promise<void> {
 		if (signal?.aborted) onAbort();
 		else signal?.addEventListener("abort", onAbort, { once: true });
 	});
-}
-
-function rememberTail(current: string | undefined, chunk: Buffer | string): string {
-	return `${current ?? ""}${chunk.toString()}`.slice(-4000);
 }
 
 function getWrapUpPrompt(running: RunningSubagent): string {
@@ -227,10 +224,10 @@ export async function restartSubagentForTimeoutWrapUp(
 		child.stdin?.end(launch.prompt);
 		child.unref();
 		child.stdout?.on("data", (chunk: Buffer) => {
-			running.stdoutTail = rememberTail(running.stdoutTail, chunk);
+			running.stdoutTail = rememberOutputTail(running.stdoutTail, chunk);
 		});
 		child.stderr?.on("data", (chunk: Buffer) => {
-			running.stderrTail = rememberTail(running.stderrTail, chunk);
+			running.stderrTail = rememberOutputTail(running.stderrTail, chunk);
 		});
 		return;
 	}

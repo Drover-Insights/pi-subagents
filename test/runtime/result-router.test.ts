@@ -409,6 +409,33 @@ describe("result router", () => {
 		assert.doesNotMatch(sent[0].message.content, /provider stack trace/);
 	});
 
+	it("keeps the last child output, not its stderr, when a failed child produced real output", () => {
+		const sent: Array<{ message: any; options: any }> = [];
+		const running = makeRunning();
+		setRunningSubagentForTest(running);
+
+		routeSubagentOutcome({
+			pi: {
+				sendMessage(message: any, options: any) {
+					sent.push({ message, options });
+				},
+			},
+			running,
+			result: makeResult({
+				summary: "Half of the findings.",
+				summarySource: "subagent",
+				errorMessage: "Provider unavailable",
+				stderrTail: "provider stack trace",
+			}),
+			formatElapsed: (seconds) => `${seconds}s`,
+			updateWidget: () => {},
+		});
+
+		assert.match(sent[0].message.content, /Last output before the failure[^\n]*\n\nHalf of the findings\./);
+		assert.doesNotMatch(sent[0].message.content, /Child stderr/);
+		assert.doesNotMatch(sent[0].message.content, /provider stack trace/);
+	});
+
 	it("uses next-turn delivery only for a live parent and steers auto-exit parents", () => {
 		const savedAutoExit = process.env.PI_SUBAGENT_AUTO_EXIT;
 		try {

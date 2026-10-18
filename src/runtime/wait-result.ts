@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { CompletedSubagentResult, DeliveryState, RunningSubagent, SubagentResult, WaitParams } from "../types.ts";
 import { formatContextExitNotice, formatFinalContextUsage, formatSessionRef } from "./final-context-usage.ts";
+import { formatSubagentFailureBody } from "./failure-body.ts";
 import { hasRealSubagentOutput } from "./state.ts";
 import type { WaitRuntime } from "./wait.ts";
 import { formatTimeoutOutcome, formatTimeoutWrapUpOutcome, getTimeoutResultDetails } from "./timeout-budget.ts";
@@ -46,13 +47,7 @@ function getSubagentWaitSuccessResult(cached: CompletedSubagentResult) {
 			formatElapsed,
 		)}${sessionRef}${contextRef}`;
 	} else if (cached.errorMessage) {
-		const resultBody = hasRealSubagentOutput(cached)
-			? `Last output before the failure (may be incomplete — verify before trusting):\n\n${cached.summary}`
-			: cached.contextExhausted
-				? `The subagent did not produce a result, and its context window is spent. ` +
-					`A fresh subagent is usually better than resuming this session.`
-				: `The subagent did not produce a result. You can retry by spawning a new ` +
-					`subagent or resume the session with subagent_resume.`;
+		const resultBody = formatSubagentFailureBody(cached);
 		text =
 			`Sub-agent "${cached.name}" failed after ${formatElapsed(cached.elapsed)} ` +
 			`(provider/agent error — auto-retry exhausted).\n\n` +

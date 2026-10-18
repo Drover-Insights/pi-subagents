@@ -1,10 +1,13 @@
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync, writeFileSync } from "node:fs";
+import { OUTPUT_TAIL_LIMIT, rememberOutputTail } from "../../src/launch/output-tail.ts";
 import { cleanupNoSessionSessionFile } from "../../src/launch/prep.ts";
 import { watchBackgroundSubagent } from "../../src/runtime/background-watch.ts";
 import { writeSubagentExitSidecar } from "../../src/session/exit-sidecar.ts";
-import type { RunningSubagent } from "../../src/types.ts";
+import { routeSubagentOutcome } from "../../src/runtime/result-router.ts";
+import { cacheCompletedSubagentResult } from "../../src/runtime/state.ts";
+import type { RunningSubagent, SubagentResult } from "../../src/types.ts";
 import {
 	afterEach,
 	assert,
@@ -12,8 +15,11 @@ import {
 	createTestDir,
 	describe,
 	it,
+	resetSubagentStateForTest,
 	rmSync,
+	setRunningSubagentForTest,
 	subagentDoneExtension,
+	waitForSubagentForTest,
 } from "../support/index.ts";
 
 const dirs: string[] = [];
@@ -362,54 +368,127 @@ describe("background watcher ephemeral final report", () => {
 	}
 });
 
+async function runPreTurnExit(stderrTail?: string): Promise<SubagentResult> {
+	const dir = createTestDir();
+	const sessionFile = createSessionFile(dir, []);
+	const originalSession = process.env.PI_SUBAGENT_SESSION;
+	const originalAutoExit = process.env.PI_SUBAGENT_AUTO_EXIT;
+	const originalSurface = process.env.PI_SUBAGENT_SURFACE;
+	try {
+		process.env.PI_SUBAGENT_SESSION = sessionFile;
+		process.env.PI_SUBAGENT_AUTO_EXIT = "1";
+		delete process.env.PI_SUBAGENT_SURFACE;
+		const handlers = new Map<string, any>();
+		subagentDoneExtension({
+			getAllTools: () => [],
+			getActiveTools: () => [],
+			setActiveTools() {},
+			registerTool: (definition: unknown) => definition,
+			on: (event: string, handler: any) => handlers.set(event, handler),
+			appendEntry() {},
+			registerShortcut() {},
+			registerCommand() {},
+		} as any);
+
+		const child = new EventEmitter() as ChildProcess;
+		const running = makeRunning(sessionFile, child);
+		running.launchEntryCount = 1;
+		if (stderrTail !== undefined) running.stderrTail = stderrTail;
+		const resultPromise = watchBackgroundSubagent(
+			running,
+			{ cleanupNoSessionSessionFile() {}, terminateBackgroundChildProcess() {} },
+			new AbortController().signal,
+		);
+		// A routing extension handled the prompt, so Pi shut down cleanly
+		// without ever starting the agent loop.
+		handlers.get("session_shutdown")?.();
+		child.emit("exit", 0);
+		return await resultPromise;
+	} finally {
+		if (originalSession == null) delete process.env.PI_SUBAGENT_SESSION;
+		else process.env.PI_SUBAGENT_SESSION = originalSession;
+		if (originalAutoExit == null) delete process.env.PI_SUBAGENT_AUTO_EXIT;
+		else process.env.PI_SUBAGENT_AUTO_EXIT = originalAutoExit;
+		if (originalSurface == null) delete process.env.PI_SUBAGENT_SURFACE;
+		else process.env.PI_SUBAGENT_SURFACE = originalSurface;
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+let parentDeliveryCount = 0;
+
+/** The failure text the parent sees through steer delivery and through `subagent_wait`. */
+async function parentFailureTexts(result: SubagentResult): Promise<{ steer: string; wait: string }> {
+	const sent: string[] = [];
+	const delivery = ++parentDeliveryCount;
+	const sessionFile = result.sessionFile ?? "/tmp/pre-turn.jsonl";
+	const steerRunning = {
+		...makeRunning(sessionFile, new EventEmitter() as ChildProcess),
+		id: `pre-turn-steer-${delivery}`,
+	};
+	setRunningSubagentForTest(steerRunning);
+	routeSubagentOutcome({
+		pi: { sendMessage: (message: { content: string }) => sent.push(message.content) },
+		running: steerRunning,
+		result,
+		formatElapsed: (seconds) => `${seconds}s`,
+		updateWidget: () => {},
+	});
+	// Wait on the cached completion so this read stays independent of widget state.
+	const waitRunning = { ...makeRunning(sessionFile, new EventEmitter() as ChildProcess), id: `pre-turn-wait-${delivery}` };
+	cacheCompletedSubagentResult(waitRunning, result);
+	const waited = await waitForSubagentForTest({ id: waitRunning.id });
+	return { steer: sent[0] ?? "", wait: (waited.content[0] as { text: string }).text };
+}
+
+const NO_RESULT_SENTENCE =
+	"The subagent did not produce a result. You can retry by spawning a new subagent or resume the session with subagent_resume.";
+
 describe("background watcher pre-turn exit", () => {
+	afterEach(() => resetSubagentStateForTest());
+
 	it("surfaces why a child exited before its prompt reached the model instead of reporting no output", async () => {
-		const dir = createTestDir();
-		const sessionFile = createSessionFile(dir, []);
-		const originalSession = process.env.PI_SUBAGENT_SESSION;
-		const originalAutoExit = process.env.PI_SUBAGENT_AUTO_EXIT;
-		const originalSurface = process.env.PI_SUBAGENT_SURFACE;
-		try {
-			process.env.PI_SUBAGENT_SESSION = sessionFile;
-			process.env.PI_SUBAGENT_AUTO_EXIT = "1";
-			delete process.env.PI_SUBAGENT_SURFACE;
-			const handlers = new Map<string, any>();
-			subagentDoneExtension({
-				getAllTools: () => [],
-				getActiveTools: () => [],
-				setActiveTools() {},
-				registerTool: (definition: unknown) => definition,
-				on: (event: string, handler: any) => handlers.set(event, handler),
-				appendEntry() {},
-				registerShortcut() {},
-				registerCommand() {},
-			} as any);
+		const result = await runPreTurnExit();
 
-			const child = new EventEmitter() as ChildProcess;
-			const running = makeRunning(sessionFile, child);
-			running.launchEntryCount = 1;
-			const resultPromise = watchBackgroundSubagent(
-				running,
-				{ cleanupNoSessionSessionFile() {}, terminateBackgroundChildProcess() {} },
-				new AbortController().signal,
-			);
-			// A routing extension handled the prompt, so Pi shut down cleanly
-			// without ever starting the agent loop.
-			handlers.get("session_shutdown")?.();
-			child.emit("exit", 0);
-			const result = await resultPromise;
+		assert.equal(result.exitCode, 1);
+		assert.notEqual(result.summary, "Background agent exited without output");
+		assert.match(result.errorMessage ?? "", /before its task prompt reached the model/);
+	});
 
-			assert.equal(result.exitCode, 1);
-			assert.notEqual(result.summary, "Background agent exited without output");
-			assert.match(result.errorMessage ?? "", /before its task prompt reached the model/);
-		} finally {
-			if (originalSession == null) delete process.env.PI_SUBAGENT_SESSION;
-			else process.env.PI_SUBAGENT_SESSION = originalSession;
-			if (originalAutoExit == null) delete process.env.PI_SUBAGENT_AUTO_EXIT;
-			else process.env.PI_SUBAGENT_AUTO_EXIT = originalAutoExit;
-			if (originalSurface == null) delete process.env.PI_SUBAGENT_SURFACE;
-			else process.env.PI_SUBAGENT_SURFACE = originalSurface;
-			rmSync(dir, { recursive: true, force: true });
+	it("shows the parent the child's stderr when it exited before its prompt reached the model", async () => {
+		const result = await runPreTurnExit("routing guard blocked pilot-reviewer: no capability class\n");
+		const texts = await parentFailureTexts(result);
+
+		for (const text of [texts.steer, texts.wait]) {
+			assert.match(text, /before its task prompt reached the model/);
+			assert.match(text, /Child stderr[^\n]*:\nrouting guard blocked pilot-reviewer: no capability class/);
+			assert.doesNotMatch(text, /Last output before the failure/);
+		}
+	});
+
+	it("omits the stderr section and keeps the no-result body when the child's stderr is empty", async () => {
+		for (const stderrTail of [undefined, "", "  \n\t"]) {
+			const result = await runPreTurnExit(stderrTail);
+			const texts = await parentFailureTexts(result);
+			for (const text of [texts.steer, texts.wait]) {
+				assert.ok(
+					text.includes(`${NO_RESULT_SENTENCE}\n\nSession: ${result.sessionFile}`),
+					`expected today's no-result body directly followed by the session ref (${result.sessionFile}):\n${text}`,
+				);
+				assert.doesNotMatch(text, /Child stderr/);
+			}
+		}
+	});
+
+	it("shows only the retained stderr tail when the child wrote more than the limit", async () => {
+		const retained = rememberOutputTail(undefined, `HEAD-MARKER${"x".repeat(OUTPUT_TAIL_LIMIT)}TAIL-MARKER`);
+		assert.equal(retained.length, OUTPUT_TAIL_LIMIT);
+		const result = await runPreTurnExit(retained);
+		const texts = await parentFailureTexts(result);
+
+		for (const text of [texts.steer, texts.wait]) {
+			assert.match(text, /TAIL-MARKER/);
+			assert.doesNotMatch(text, /HEAD-MARKER/);
 		}
 	});
 });

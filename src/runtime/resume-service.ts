@@ -12,6 +12,7 @@ import { getPiInvocation, getSubagentChildProcessEnv } from "../launch/child-com
 import { resolveDenyEnvPatterns } from "../launch/child-env.ts";
 import { CHILD_CONTEXT_BOUNDARY_SYSTEM_PROMPT } from "../launch/context-boundary.ts";
 import { parseEnvString } from "../launch/env.ts";
+import { rememberOutputTail } from "../launch/output-tail.ts";
 import { getSkillVisibilitySpec, PI_SUBAGENT_SKILL_VISIBILITY } from "../launch/skill-visibility.ts";
 import { resolveSubagentTimeoutState } from "../launch/policy.ts";
 import {
@@ -463,10 +464,10 @@ async function resumeSubagentSessionWithoutWidth(
 		child.unref();
 		running.childProcess = child;
 		child.stdout?.on("data", (chunk: Buffer) => {
-			running.stdoutTail = rememberTail(running.stdoutTail, chunk);
+			running.stdoutTail = rememberOutputTail(running.stdoutTail, chunk);
 		});
 		child.stderr?.on("data", (chunk: Buffer) => {
-			running.stderrTail = rememberTail(running.stderrTail, chunk);
+			running.stderrTail = rememberOutputTail(running.stderrTail, chunk);
 		});
 	} else {
 		const surfaceName = invocationMetadata?.sessionTitle ?? displayName;
@@ -551,6 +552,3 @@ async function resumeSubagentSessionWithoutWidth(
 	return running;
 }
 
-function rememberTail(current: string | undefined, chunk: Buffer | string): string {
-	return `${current ?? ""}${chunk.toString()}`.slice(-4000);
-}

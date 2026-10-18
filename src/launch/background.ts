@@ -10,6 +10,7 @@ import { getPiInvocation, getSubagentChildProcessEnv } from "./child-command.ts"
 import { resolveDenyEnvPatterns } from "./child-env.ts";
 import { CHILD_CONTEXT_BOUNDARY_SYSTEM_PROMPT } from "./context-boundary.ts";
 import { coordinateSubagentLaunch } from "./launch-coordinator.ts";
+import { rememberOutputTail } from "./output-tail.ts";
 import { PI_SUBAGENT_TIMEOUT_STARTED_AT } from "../tools/timeout-reminders.ts";
 import {
 	resolveSubagentNoContextFiles,
@@ -189,13 +190,11 @@ export async function launchBackgroundSubagent(
 			? { writerLease: params.writerLease, writerGeneration: 1, writerInitPid: writer.group.initPid }
 			: {}),
 	};
-	const rememberTail = (current: string | undefined, chunk: Buffer | string) =>
-		`${current ?? ""}${chunk.toString()}`.slice(-4000);
 	child.stdout?.on("data", (chunk) => {
-		running.stdoutTail = rememberTail(running.stdoutTail, chunk);
+		running.stdoutTail = rememberOutputTail(running.stdoutTail, chunk);
 	});
 	child.stderr?.on("data", (chunk) => {
-		running.stderrTail = rememberTail(running.stderrTail, chunk);
+		running.stderrTail = rememberOutputTail(running.stderrTail, chunk);
 	});
 	return running;
 }
