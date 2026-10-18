@@ -1,6 +1,7 @@
 import { outstandingWork } from "./outstanding-work.ts";
 import type { CompletedSubagentResult, RunningSubagent, SubagentPingMessageDetails, SubagentResult } from "../types.ts";
 import { formatContextExitNotice, formatFinalContextUsage, formatSessionRef } from "./final-context-usage.ts";
+import { formatSubagentFailureBody } from "./failure-body.ts";
 import { releaseSpawnWidthSlot } from "./spawn-width.ts";
 import {
 	buildCompletedSubagentResult,
@@ -203,13 +204,7 @@ function getProviderErrorContent(
 	formatElapsed: (elapsed: number) => string,
 	sessionRef: string,
 ): string {
-	const resultBody = hasRealSubagentOutput(completed)
-		? `Last output before the failure (may be incomplete — verify before trusting):\n\n${completed.summary}`
-		: completed.contextExhausted
-			? `The subagent did not produce a result, and its context window is spent. ` +
-				`A fresh subagent is usually better than resuming this session.`
-			: `The subagent did not produce a result. You can retry by spawning a new ` +
-				`subagent or resume the session with subagent_resume.`;
+	const resultBody = formatSubagentFailureBody(completed);
 	return (
 		`Sub-agent "${completed.name}" failed after ${formatElapsed(completed.elapsed)} ` +
 		`(provider/agent error — auto-retry exhausted).\n\n` +

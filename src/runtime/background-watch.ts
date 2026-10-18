@@ -397,6 +397,7 @@ function watchBackgroundGeneration(
 				...(running.timeoutWrapUp ? { timeoutWrapUp: running.timeoutWrapUp } : {}),
 				ping: exitSignal?.ping,
 				errorMessage,
+				...(errorMessage && stderr ? { stderrTail: stderr } : {}),
 				},
 			});
 		};
