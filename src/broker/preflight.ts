@@ -55,13 +55,13 @@ export function protectedBrokerPaths(): Pick<SandboxPlanInput, "protectedPaths" 
 	return { protectedPaths, protectedAncestors: [home] };
 }
 
-/** Null when tools can run sandboxed in `cwd`; otherwise why they cannot. */
-export function checkToolBroker(
-	cwd: string,
-	mode: BrokerMode,
-	probe: () => SandboxProbe = probeSandbox,
-): string | null {
-	const plan = buildSandboxPlan({ mode, cwd, ...protectedBrokerPaths() });
+/**
+ * Null when tools can run sandboxed in `cwd`; otherwise why they cannot. Both
+ * modes mount the same roots, so the check plans read-only: a writer's
+ * worktree identity is validated separately and pinned only once it is leased.
+ */
+export function checkToolBroker(cwd: string, probe: () => SandboxProbe = probeSandbox): string | null {
+	const plan = buildSandboxPlan({ mode: "read-only", cwd, ...protectedBrokerPaths() });
 	if (plan.status === "rejected") return plan.message;
 	const result = probe();
 	return result.status === "unavailable" ? result.message : null;

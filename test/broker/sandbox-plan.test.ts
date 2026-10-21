@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "node:test";
@@ -40,13 +40,25 @@ function repository() {
 
 type Repo = ReturnType<typeof repository>;
 
+/** The identity a writer of the linked worktree is pinned to. */
+function pinnedLinked(repo: Repo) {
+	return { top: repo.linked, commonDir: repo.common, worktreeGitDir: repo.linkedGitDir, branch: "linked" };
+}
+
+/** A writer plan is pinned to the linked worktree unless the input says otherwise. */
 function plan(repo: Repo, input: Partial<SandboxPlanInput> & Pick<SandboxPlanInput, "cwd">): SandboxPlan {
 	return buildSandboxPlan({
 		mode: "read-only",
 		protectedPaths: [repo.agentDir],
 		protectedAncestors: [repo.home],
+		...(input.mode === "writer" && !("identity" in input) ? { identity: pinnedLinked(repo) } : {}),
 		...input,
 	});
+}
+
+function mismatch(result: SandboxPlan, pattern: RegExp) {
+	assert.equal(result.status, "mismatch", result.status === "ready" ? "the plan was accepted" : result.message);
+	if (result.status === "mismatch") assert.match(result.message, pattern);
 }
 
 function ready(result: SandboxPlan) {
@@ -118,15 +130,19 @@ describe("sandbox mount plan", () => {
 
 	test("lets a writer write its working tree but keeps every Git directory and link read-only", () => {
 		const repo = repository();
-		const linked = ready(plan(repo, { mode: "writer", cwd: repo.linked }));
+		const linked = ready(plan(repo, { mode: "writer", cwd: join(repo.linked, "src") }));
 		assert.equal(lastMountOf(linked.args, repo.linked), "--bind");
 		assert.equal(lastMountOf(linked.args, repo.common), "--ro-bind");
 		assert.equal(lastMountOf(linked.args, join(repo.linked, ".git")), "--ro-bind");
-		const main = ready(plan(repo, { mode: "writer", cwd: repo.main }));
-		const binds = mounts(main.args);
-		const top = binds.findIndex(([flag, , destination]) => flag === "--bind" && destination === repo.main);
+		const binds = mounts(linked.args);
+		const top = binds.findIndex(([flag, , destination]) => flag === "--bind" && destination === repo.linked);
 		const git = binds.findIndex(([flag, , destination]) => flag === "--ro-bind" && destination === repo.common);
-		assert.ok(top >= 0 && git > top, "the .git directory is not sealed after the writable working tree");
+		assert.ok(top >= 0 && git > top, "the Git directory is not sealed after the writable working tree");
+	});
+
+	test("refuses a writer plan that has no pinned identity", () => {
+		const repo = repository();
+		rejected(plan(repo, { mode: "writer", cwd: repo.linked, identity: undefined }), /pinned worktree identity/);
 	});
 
 	test("binds a directory outside any repository by itself", () => {
@@ -173,7 +189,7 @@ describe("sandbox mount plan", () => {
 		const repo = repository();
 		const alias = join(repo.root, "alias");
 		symlinkSync(join(repo.agentDir, "sessions"), alias);
-		rejected(plan(repo, { mode: "writer", cwd: alias }));
+		rejected(plan(repo, { cwd: alias }));
 	});
 
 	test("rejects a .git file that points anywhere but a linked worktree of a real repository", () => {
@@ -215,12 +231,53 @@ describe("sandbox mount plan", () => {
 		const repo = repository();
 		const bare = join(repo.root, "bare.git");
 		gitDirectory(bare);
-		rejected(plan(repo, { mode: "writer", cwd: bare }), /Git directory/);
-		rejected(plan(repo, { mode: "writer", cwd: join(repo.common, "hooks") }), /Git directory/);
+		rejected(plan(repo, { cwd: bare }), /Git directory/);
+		rejected(plan(repo, { cwd: join(repo.common, "hooks") }), /Git directory/);
 	});
 
 	test("rejects a working directory that does not exist", () => {
 		const repo = repository();
 		rejected(plan(repo, { cwd: join(repo.root, "missing") }));
+	});
+});
+
+describe("a writer plan pinned to its worktree identity", () => {
+	test("is refused as a mismatch when the worktree was renamed or moved", () => {
+		const repo = repository();
+		const moved = join(repo.root, "worktrees", "moved");
+		renameSync(repo.linked, moved);
+		mismatch(plan(repo, { mode: "writer", cwd: repo.linked }), /does not exist|pinned/);
+		mismatch(plan(repo, { mode: "writer", cwd: moved }), /outside its pinned worktree/);
+	});
+
+	test("is refused as a mismatch when the worktree's branch was switched", () => {
+		const repo = repository();
+		writeFileSync(join(repo.linkedGitDir, "HEAD"), "ref: refs/heads/other\n");
+		mismatch(plan(repo, { mode: "writer", cwd: repo.linked }), /branch other.*not the pinned linked/);
+		writeFileSync(join(repo.linkedGitDir, "HEAD"), "0123456789012345678901234567890123456789\n");
+		mismatch(plan(repo, { mode: "writer", cwd: repo.linked }), /not on a branch/);
+	});
+
+	test("is refused as a mismatch in a nested repository inside the worktree", () => {
+		const repo = repository();
+		const nested = join(repo.linked, "src", "nested");
+		gitDirectory(join(nested, ".git"));
+		mismatch(plan(repo, { mode: "writer", cwd: nested }), /repository at .*nested.*not the pinned worktree/);
+	});
+
+	test("is refused as a mismatch when the top-level .git link was redirected", () => {
+		const repo = repository();
+		const other = join(repo.common, "worktrees", "other");
+		mkdirSync(other, { recursive: true });
+		writeFileSync(join(other, "commondir"), "../..\n");
+		writeFileSync(join(other, "gitdir"), `${join(repo.linked, ".git")}\n`);
+		writeFileSync(join(other, "HEAD"), "ref: refs/heads/linked\n");
+		writeFileSync(join(repo.linked, ".git"), `gitdir: ${other}\n`);
+		mismatch(plan(repo, { mode: "writer", cwd: repo.linked }), /Git directory .*other.*not the pinned/);
+	});
+
+	test("is refused as a mismatch outside the pinned top, even in another worktree of the same repository", () => {
+		const repo = repository();
+		mismatch(plan(repo, { mode: "writer", cwd: repo.main }), /outside its pinned worktree/);
 	});
 });

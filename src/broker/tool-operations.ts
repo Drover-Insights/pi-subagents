@@ -15,8 +15,10 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { getAgentConfigDir } from "../agents/definitions.ts";
 import { protectedBrokerPaths } from "./preflight.ts";
-import { type BrokerMode, buildSandboxPlan } from "./sandbox-plan.ts";
+import { buildSandboxPlan, type SandboxPlanInput } from "./sandbox-plan.ts";
 import { runInSandbox, type SandboxRunOptions, type SandboxRunResult } from "./sandbox-run.ts";
+import type { WriterContainment } from "./writer-containment.ts";
+import { breachReason, sealWriterTree } from "./writer-seal.ts";
 
 /** The first regular file named one of `names`: Pi's managed bin first, then PATH. */
 function resolveExecutable(names: readonly string[]): string | undefined {
@@ -60,13 +62,22 @@ export function requireSearchBinary(name: "rg" | "fd"): void {
 const FILE_OP_TIMEOUT_MS = 120_000;
 const FILE_OP_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
 
-/** One tool call's confinement mode and the abort signal that stops its sandboxes. */
-export type BrokerScope = { mode: BrokerMode; signal?: AbortSignal };
+/**
+ * One tool call's confinement and the abort signal that stops its sandboxes.
+ * A writer's sandboxes are pinned to, and contained by, its session's containment.
+ */
+export type BrokerScope =
+	| { mode: "read-only"; signal?: AbortSignal }
+	| { mode: "writer"; containment: WriterContainment; signal?: AbortSignal };
 
 /**
  * Runs `command` in a sandbox for the scope's mode rooted at `cwd`. A rejected
  * plan throws. A bounded run, every operation but bash, gets the file-operation
  * time and output limits; a caller that passes its own signal handles its abort.
+ *
+ * A writer's sandbox runs only while no other of its sandboxes does, is
+ * planned from its pinned identity, and is followed by the seal walk before
+ * its result returns. An identity mismatch or a breach contains the writer.
  */
 export async function sandboxRun(
 	scope: BrokerScope,
@@ -75,7 +86,38 @@ export async function sandboxRun(
 	options: SandboxRunOptions = {},
 	bounded = true,
 ): Promise<SandboxRunResult> {
-	const plan = buildSandboxPlan({ mode: scope.mode, cwd, ...protectedBrokerPaths(), executables: brokerExecutables() });
+	const input: SandboxPlanInput = { mode: scope.mode, cwd, ...protectedBrokerPaths(), executables: brokerExecutables() };
+	if (scope.mode === "read-only") return planAndRun(input, scope, command, options, bounded);
+	const { containment } = scope;
+	return containment.exclusive(async () => {
+		containment.assertOpen();
+		let outcome: { result: SandboxRunResult } | { error: unknown };
+		try {
+			outcome = { result: await planAndRun({ ...input, identity: containment.identity }, scope, command, options, bounded, containment) };
+		} catch (error) {
+			outcome = { error };
+		}
+		// A run that failed may still have written the tree.
+		if (!containment.contained) {
+			const seal = sealWriterTree(containment.identity, containment.quarantineDirectory);
+			if (seal.status === "breached") throw containment.contain(breachReason(seal));
+		}
+		if ("error" in outcome) throw outcome.error;
+		return outcome.result;
+	});
+}
+
+async function planAndRun(
+	input: SandboxPlanInput,
+	scope: BrokerScope,
+	command: readonly string[],
+	options: SandboxRunOptions,
+	bounded: boolean,
+	containment?: WriterContainment,
+): Promise<SandboxRunResult> {
+	const plan = buildSandboxPlan(input);
+	// Only a writer's plan is pinned, so only a writer's plan can mismatch.
+	if (plan.status === "mismatch") throw containment?.contain(plan.message) ?? new Error(`tool broker: ${plan.message}`);
 	if (plan.status === "rejected") throw new Error(`tool broker: ${plan.message}`);
 	const result = await runInSandbox(plan.args, command, {
 		...(bounded ? { timeoutMs: FILE_OP_TIMEOUT_MS, maxOutputBytes: FILE_OP_MAX_OUTPUT_BYTES } : {}),

@@ -577,7 +577,8 @@ export function getBaseSubagentEnvVars(
 	const sessionMode = resolveEffectiveSessionMode(params, prepared.agentDefs);
 	if (sessionMode !== "standalone") if (prepared.sessionFile) envVars.PI_SUBAGENT_PARENT_SESSION = prepared.sessionFile;
 	envVars.PI_ARTIFACT_PROJECT_ROOT = getArtifactStorageRoot();
-	Object.assign(envVars, toolBrokerEnv(prepared.policyLaunch));
+	// A writer's first generation is pinned to the worktree its lease holds.
+	Object.assign(envVars, toolBrokerEnv(prepared.policyLaunch, params.writerLease?.identity(1)));
 	return envVars;
 }
 

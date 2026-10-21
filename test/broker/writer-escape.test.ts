@@ -8,7 +8,7 @@ import { buildSandboxPlan } from "../../src/broker/sandbox-plan.ts";
 import { BWRAP_PATH, runInSandbox } from "../../src/broker/sandbox-run.ts";
 import { spawnWriterChild } from "../../src/broker/writer-spawn.ts";
 import "../support/temp-root.ts";
-import { repoGit, writerRepo } from "../support/writer-repo.ts";
+import { pinnedOf, repoGit, writerRepo } from "../support/writer-repo.ts";
 
 /**
  * Real-bubblewrap escape tests for a writer's sandbox: it may write its own
@@ -84,7 +84,7 @@ describe("writer sandbox confinement", { skip }, () => {
 				"(printf '#!/bin/sh\\necho pwned\\n' > \"$(git rev-parse --git-path hooks)/post-checkout\") 2>/dev/null && echo 'ESCAPED hook install'",
 			];
 			const before = protectedState(repo, other);
-			const plan = buildSandboxPlan({ mode: "writer", cwd: repo.linked, protectedPaths: [join(homedir(), ".pi")], protectedAncestors: [homedir()] });
+			const plan = buildSandboxPlan({ mode: "writer", cwd: repo.linked, identity: pinnedOf(repo), protectedPaths: [join(homedir(), ".pi")], protectedAncestors: [homedir()] });
 			if (plan.status !== "ready") throw new Error(plan.message);
 
 			const command = [

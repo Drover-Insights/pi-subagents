@@ -1,6 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { getAgentConfigDir } from "../agents/definitions.ts";
 import { toolBrokerEnv } from "../broker/env-contract.ts";
+import { containWriterLease } from "../broker/writer-lease.ts";
 import { requireEarlierGenerationsEmpty, spawnLeasedWriter } from "../broker/writer-spawn.ts";
 import { loadCanonicalPolicy } from "../routing/canonical-policy.ts";
 import { checkManagedChildRequest } from "../routing/launch-authorization.ts";
@@ -155,7 +156,11 @@ async function getWrapUpLaunchParts(running: RunningSubagent, signal?: AbortSign
 	env.PI_SUBAGENT_SPAWN_WIDTH_EFFECTIVE = "";
 	env.PI_PACKAGE_DIR = "";
 	env.PI_ARTIFACT_PROJECT_ROOT = getArtifactStorageRoot();
-	Object.assign(env, toolBrokerEnv(managed));
+	// A writer's continuation is its lease's next execution generation.
+	Object.assign(
+		env,
+		toolBrokerEnv(managed, running.writerLease?.identity((running.writerGeneration ?? 1) + 1)),
+	);
 	return {
 		args: [...extensionArgs, ...parityArgs],
 		env,
@@ -185,6 +190,12 @@ export async function restartSubagentForTimeoutWrapUp(
 	}
 	if (running.mode === "background" && running.writerLease) {
 		await requireEarlierGenerationsEmpty(running.writerLease);
+		// The stopped generation is gone, so its worktree can be walked before the next one starts.
+		const breach = running.writerLease.inspect();
+		if (breach !== null) {
+			containWriterLease(running.writerLease, breach);
+			throw new Error(`The writer was contained and no next generation starts: ${breach}`);
+		}
 	}
 	throwIfAborted(signal);
 	clearSubagentExitSidecar(running.sessionFile);

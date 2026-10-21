@@ -83,7 +83,8 @@ function workerLaunch(): PolicyLaunch {
 		agentDir,
 	});
 	assert.equal(authorization.status, "authorized");
-	return (authorization as { launch: PolicyLaunch }).launch;
+	// A writer relaunches only under its lease, which the writer-lease tests cover; these gates do not depend on the mode.
+	return { ...(authorization as { launch: PolicyLaunch }).launch, toolBroker: { mode: "read-only" } };
 }
 
 function managedRunning(dir: string, sessionFile: string): RunningSubagent {
@@ -321,7 +322,7 @@ describe("parent-authorized requests to managed children", () => {
 		await restartSubagentForTimeoutWrapUp(running, { getShellReadyDelayMs: () => 0 });
 		await new Promise((resolve) => running.childProcess?.once("exit", resolve));
 
-		assert.equal(readFileSync(marker, "utf8").trim(), '{"version":1,"mode":"writer"}');
+		assert.equal(readFileSync(marker, "utf8").trim(), '{"version":2,"mode":"read-only"}');
 	});
 
 	it("blocks a managed timeout wrap-up whose catalogued files changed since launch", async () => {

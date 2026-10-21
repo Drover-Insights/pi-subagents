@@ -10,6 +10,12 @@
  * `lease-<n>.end.json` marker is created with `O_EXCL`, carrying the proof
  * that its execution group is empty. Nothing is ever deleted or renamed, so
  * the directory is the audit trail.
+ *
+ * Before a lease that ran a writer ends, its worktree is inspected: its
+ * pinned identity, the child's containment records, and a walk for
+ * writer-created Git metadata. Any failure writes `lease-<n>.contained.json`
+ * instead, which no proof or reclaim clears; only an operator's
+ * `lease-<n>.cleared.json` lets a proven-empty contained lease end.
  */
 import { createHash, randomBytes } from "node:crypto";
 import {
@@ -34,6 +40,8 @@ import {
 	readSupervisorIdentity,
 	type SupervisorIdentity,
 } from "./writer-group.ts";
+import type { PinnedWorktree, WriterIdentity } from "./env-contract.ts";
+import { inspectWriterTree } from "./writer-containment.ts";
 import type { WriterWorktree } from "./writer-worktree.ts";
 
 export type WriterLeaseRequest = { worktree: WriterWorktree; launchId: string; policyGeneration: string };
@@ -62,6 +70,17 @@ type LeaseRecord = {
 type GroupRecord = { generation: number; group: ExecutionGroup; recordedAt: string };
 
 export type LeaseRelease = { status: "released" } | { status: "held"; reason: string };
+
+/** Kill a still-running namespace init; injectable for tests. */
+type KillProcess = (pid: number) => void;
+
+const killProcess: KillProcess = (pid) => {
+	try {
+		process.kill(pid, "SIGKILL");
+	} catch {
+		// Already gone.
+	}
+};
 
 export type LeaseAcquisition =
 	| { status: "acquired"; lease: WriterLease }
@@ -155,6 +174,21 @@ function readJson<T>(path: string): T {
 	return JSON.parse(readFileSync(path, "utf8")) as T;
 }
 
+/** Why lease `number` is contained, or undefined. The marker's existence decides; a crash can leave it empty. */
+function containedReason(dir: string, number: number): string | undefined {
+	const marker = join(dir, `lease-${number}.contained.json`);
+	if (!exists(marker)) return undefined;
+	try {
+		return readJson<{ reason: string }>(marker).reason;
+	} catch {
+		return "its containment marker is unreadable";
+	}
+}
+
+function heldContained(number: number, reason: string): string {
+	return `the writer lease is contained: ${reason}; an operator must inspect the worktree and create lease-${number}.cleared.json to clear it`;
+}
+
 function groupRecords(dir: string, number: number): GroupRecord[] {
 	const pattern = new RegExp(`^lease-${number}\\.group-(\\d+)\\.json$`);
 	return readdirSync(dir)
@@ -208,15 +242,27 @@ export class WriterLease {
 	readonly number: number;
 	/** The leased worktree's top, the only directory its writer may run in. */
 	readonly worktree: string;
+	/** The worktree identity the lease was taken for. */
+	readonly pinned: PinnedWorktree;
+	readonly launchId: string;
 	private readonly supervisorPidNamespace: string;
 	/** Why a spawn of this lease may have left an unrecorded writer, once one has. */
 	private unprovenSpawn: string | undefined;
+	/** Why this lease was contained, held in memory in case its marker cannot be written. */
+	private containedInMemory: string | undefined;
 
-	constructor(dir: string, number: number, worktree: string, supervisorPidNamespace: string) {
+	constructor(dir: string, number: number, pinned: PinnedWorktree, launchId: string, supervisorPidNamespace: string) {
 		this.dir = dir;
 		this.number = number;
-		this.worktree = worktree;
+		this.worktree = pinned.top;
+		this.pinned = pinned;
+		this.launchId = launchId;
 		this.supervisorPidNamespace = supervisorPidNamespace;
+	}
+
+	/** The identity generation `generation` of this lease's writer is pinned to. */
+	identity(generation: number): WriterIdentity {
+		return { ...this.pinned, launchId: this.launchId, generation };
 	}
 
 	private get name(): string {
@@ -257,12 +303,68 @@ export class WriterLease {
 		createMarker(this.dir, `${this.name}.spawn-unproven.json`, { reason, at: new Date().toISOString() });
 	}
 
-	/** Release when every recorded group is proven empty; otherwise the lease stays held and the reason is returned. */
+	/** Why this lease is contained, from this process or from disk, or undefined. Throws when the store is unreadable. */
+	containedReason(): string | undefined {
+		return this.containedInMemory ?? containedReason(this.dir, this.number);
+	}
+
+	/**
+	 * Why the writer must be contained, or null: an existing containment, a
+	 * changed worktree identity, the child's containment records, or, once
+	 * every group is proven empty, writer-created Git metadata, which is
+	 * quarantined. Never throws.
+	 */
+	inspect(reader: ProcReader = procReader): string | null {
+		try {
+			const contained = this.containedReason();
+			if (contained !== undefined) return contained;
+			return inspectWriterTree(this.pinned, this.launchId, this.proveEmpty(reader).proven);
+		} catch (error) {
+			return `cannot inspect the writer's lease: ${error instanceof Error ? error.message : String(error)}`;
+		}
+	}
+
+	/** Contain this lease for good; the first reason is kept. Never throws: the mark holds in memory regardless. */
+	markContained(reason: string): void {
+		this.containedInMemory ??= reason;
+		try {
+			createMarker(this.dir, `${this.name}.contained.json`, { reason, at: new Date().toISOString() });
+		} catch {
+			// Held in memory; if this process dies too, a reclaim inspects the tree again.
+		}
+	}
+
+	/** Kill the init of every recorded group still running as recorded; a reused PID is never signalled. */
+	killRunningGroups(reader: ProcReader = procReader, kill: KillProcess = killProcess): void {
+		let groups: GroupRecord[];
+		try {
+			groups = groupRecords(this.dir, this.number);
+		} catch {
+			return;
+		}
+		for (const { group } of groups) {
+			if (classifyExecutionGroup(group, this.supervisorPidNamespace, reader).state === "running") kill(group.initPid);
+		}
+	}
+
+	/**
+	 * Release when every recorded group is proven empty and the worktree passes
+	 * inspection; otherwise the lease stays held and the reason is returned. A
+	 * failed inspection contains the lease.
+	 */
 	releaseIfEmpty(reader: ProcReader = procReader): LeaseRelease {
 		const proof = this.proveEmpty(reader);
 		if (!proof.proven) {
 			if (!proof.running) this.markForRecovery(proof.reason);
 			return { status: "held", reason: proof.reason };
+		}
+		// A contained lease ends only through an operator's clear, which the next acquire honors.
+		const contained = this.containedReason();
+		if (contained !== undefined) return { status: "held", reason: heldContained(this.number, contained) };
+		const breach = inspectWriterTree(this.pinned, this.launchId, true);
+		if (breach !== null) {
+			this.markContained(breach);
+			return { status: "held", reason: heldContained(this.number, breach) };
 		}
 		this.end({ kind: "released", evidence: proof.evidence });
 		return { status: "released" };
@@ -277,7 +379,10 @@ export class WriterLease {
 		}
 	}
 
-	/** Release a lease whose child never spawned. Refused once a group is recorded. */
+	/**
+	 * Release a lease whose child never spawned. Refused once a group is
+	 * recorded, so no writer ever ran under it and there is nothing to inspect.
+	 */
 	releaseUnspawned(reason: string): void {
 		if (
 			groupRecords(this.dir, this.number).length > 0 ||
@@ -311,6 +416,9 @@ export async function releaseWhenEmpty(lease: WriterLease, options: ReleaseWaitO
 	const graceMs = options.unknownGraceMs ?? 10_000;
 	let unknownSince: number | undefined;
 	while (true) {
+		// A contained lease waits for an operator, not for proof.
+		const contained = containedNow(lease);
+		if (contained !== undefined) return { status: "held", reason: heldContained(lease.number, contained) };
 		const proof = lease.proveEmpty(options.reader);
 		if (proof.proven) {
 			try {
@@ -327,6 +435,28 @@ export async function releaseWhenEmpty(lease: WriterLease, options: ReleaseWaitO
 		}
 		await new Promise((resolve) => setTimeout(resolve, intervalMs).unref?.());
 	}
+}
+
+function containedNow(lease: WriterLease): string | undefined {
+	try {
+		return lease.containedReason();
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Contain a writer: mark its lease first, so a crash between the two cannot
+ * leave a killed writer's lease reclaimable unmarked, then kill every
+ * recorded group still running.
+ */
+export function containWriterLease(
+	lease: WriterLease,
+	reason: string,
+	options: { reader?: ProcReader; kill?: KillProcess } = {},
+): void {
+	lease.markContained(reason);
+	lease.killRunningGroups(options.reader, options.kill);
 }
 
 /** Wait until every recorded group is proven empty, or report why not once `timeoutMs` passes. */
@@ -358,16 +488,35 @@ function latestLease(dir: string): number {
 	return latest;
 }
 
-/** Reclaim lease `number` when its supervisor is dead and its groups are proven empty; otherwise why not. */
+/**
+ * Reclaim lease `number` when its supervisor is dead, its groups are proven
+ * empty, and its worktree passes inspection; otherwise why not. A contained
+ * lease is reclaimed only once an operator cleared it and its groups are
+ * proven empty: a contained supervisor never starts another generation.
+ */
 function tryReclaim(dir: string, number: number, reader: ProcReader): string | null {
 	const record = readJson<LeaseRecord>(join(dir, `lease-${number}.json`));
 	const held = `the worktree's writer lease is held by launch ${record.launchId} (supervisor ${record.supervisor.pid})`;
+	const contained = containedReason(dir, number);
+	if (contained !== undefined) {
+		if (!exists(join(dir, `lease-${number}.cleared.json`))) return `${held}; ${heldContained(number, contained)}`;
+		const cleared = proveLeaseEmpty(dir, number, record.supervisor.pidNamespace, reader);
+		if (!cleared.proven) return `${held}; it is cleared but ${cleared.reason}`;
+		createMarker(dir, `lease-${number}.end.json`, { kind: "cleared", evidence: cleared.evidence, at: new Date().toISOString() });
+		return null;
+	}
 	const supervisor = classifySupervisor({ ...record.supervisor, bootId: record.bootId }, reader);
 	if (supervisor.state !== "dead") {
 		return supervisor.state === "unknown" ? `${held}; its supervisor cannot be checked: ${supervisor.reason}` : held;
 	}
 	const proof = proveLeaseEmpty(dir, number, record.supervisor.pidNamespace, reader);
 	if (!proof.proven) return `${held}; its supervisor is dead but ${proof.reason}`;
+	const pinned = { top: record.worktree, commonDir: record.repository, worktreeGitDir: record.gitDir, branch: record.branch };
+	const breach = inspectWriterTree(pinned, record.launchId, true);
+	if (breach !== null) {
+		createMarker(dir, `lease-${number}.contained.json`, { reason: breach, at: new Date().toISOString() });
+		return `${held}; ${heldContained(number, breach)}`;
+	}
 	createMarker(dir, `lease-${number}.end.json`, {
 		kind: "reclaimed",
 		evidence: [`supervisor: ${supervisor.evidence}`, ...proof.evidence],
@@ -407,7 +556,8 @@ function acquire(root: string, request: WriterLeaseRequest, options: WriterLease
 	if (linkRecord(dir, `lease-${number}.json`, record) === "exists") {
 		return { status: "held", reason: "another launch acquired the worktree's writer lease first" };
 	}
-	return { status: "acquired", lease: new WriterLease(dir, number, worktree.top, supervisor.pidNamespace) };
+	const pinned = { top: worktree.top, commonDir: worktree.commonDir, worktreeGitDir: worktree.gitDir, branch: worktree.branch };
+	return { status: "acquired", lease: new WriterLease(dir, number, pinned, request.launchId, supervisor.pidNamespace) };
 }
 
 /** Acquire the writer lease for a worktree. Never throws. */

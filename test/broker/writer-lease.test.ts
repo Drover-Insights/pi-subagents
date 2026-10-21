@@ -6,70 +6,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import { promisify } from "node:util";
-import type { ExecutionGroup, ProcReader, SupervisorIdentity } from "../../src/broker/writer-group.ts";
-import { acquireWriterLease, releaseWhenEmpty, type WriterLeaseRequest } from "../../src/broker/writer-lease.ts";
+import type { ProcReader, SupervisorIdentity } from "../../src/broker/writer-group.ts";
+import { acquireWriterLease, releaseWhenEmpty } from "../../src/broker/writer-lease.ts";
 import "../support/temp-root.ts";
+import { acquired, files, group, LEASED, proc, request, SELF_NS, statLine, storeRoot, supervisor, supervisorAlive } from "../support/writer-lease-store.ts";
 
 const run = promisify(execFile);
-
-function storeRoot(): string {
-	return join(realpathSync(mkdtempSync(join(tmpdir(), "writer-lease-"))), "writer-leases");
-}
-
-function request(launchId = "call-1"): WriterLeaseRequest {
-	return {
-		worktree: {
-			top: "/repo/worktrees/task",
-			gitDir: "/repo/main/.git/worktrees/task",
-			commonDir: "/repo/main/.git",
-			branch: "task",
-			head: "a".repeat(40),
-		},
-		launchId,
-		policyGeneration: "gen-7",
-	};
-}
-
-const SELF_NS = "pid:[4026531836]";
-const supervisor: SupervisorIdentity = { pid: 50, startTime: "100", pidNamespace: SELF_NS, bootId: "boot-1" };
-const group: ExecutionGroup = { initPid: 400, startTime: "9000", pidNamespace: "pid:[4026534438]", bootId: "boot-1" };
-
-function statLine(pid: number, state: string, startTime: string): string {
-	const rest = [state, "1", "1", "1", "0", "-1", "0", "0", "0", "0", "0", "0", "0", "0", "0", "20", "0", "1", "0", startTime];
-	return `${pid} (pi) ${rest.join(" ")}`;
-}
-
-/** A fake /proc: each listed PID is running (or in the given state) with the given start time; others are gone. */
-function proc(processes: Record<number, [string, string]>, bootId = "boot-1"): ProcReader {
-	return {
-		bootId: () => bootId,
-		stat: (pid) => {
-			const entry = processes[pid];
-			if (!entry) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
-			return statLine(pid, entry[0], entry[1]);
-		},
-		pidNamespace: (pid) => (pid === "self" ? SELF_NS : group.pidNamespace),
-		signalZero: (pid) => {
-			if (!processes[pid]) throw Object.assign(new Error("ESRCH"), { code: "ESRCH" });
-		},
-	};
-}
-
-const supervisorAlive = proc({ 50: ["S", "100"] });
-
-function files(root: string): string[] {
-	const [key] = readdirSync(root);
-	return readdirSync(join(root, key as string))
-		.filter((name) => name !== "tmp")
-		.sort();
-}
-
-function acquired(root: string, reader: ProcReader, launchId?: string) {
-	const result = acquireWriterLease(root, request(launchId), { reader, supervisor });
-	assert.equal(result.status, "acquired", JSON.stringify(result));
-	if (result.status !== "acquired") throw new Error("unreachable");
-	return result.lease;
-}
 
 describe("writer lease store", () => {
 	test("acquires one durable lease per worktree in a private directory, binding the launch to it", () => {
@@ -84,11 +26,11 @@ describe("writer lease store", () => {
 		assert.deepEqual(record, {
 			version: 1,
 			number: 1,
-			repository: "/repo/main/.git",
-			worktree: "/repo/worktrees/task",
-			gitDir: "/repo/main/.git/worktrees/task",
+			repository: LEASED.common,
+			worktree: LEASED.linked,
+			gitDir: LEASED.gitDir,
 			branch: "task",
-			head: "a".repeat(40),
+			head: LEASED.head,
 			launchId: "call-1",
 			policyGeneration: "gen-7",
 			bootId: "boot-1",
@@ -245,7 +187,7 @@ describe("writer lease store", () => {
 	test("refuses a per-worktree directory planted as a symlink", () => {
 		const root = storeRoot();
 		mkdirSync(root, { mode: 0o700 });
-		const key = createHash("sha256").update("/repo/main/.git\0/repo/main/.git/worktrees/task").digest("hex");
+		const key = createHash("sha256").update(`${LEASED.common}\0${LEASED.gitDir}`).digest("hex");
 		const elsewhere = join(root, "..", "elsewhere");
 		mkdirSync(elsewhere, { mode: 0o700 });
 		symlinkSync(elsewhere, join(root, key));

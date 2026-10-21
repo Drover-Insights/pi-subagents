@@ -162,7 +162,8 @@ function authorizedLaunch(agentDir: string): PolicyLaunch {
 		agentDir,
 	});
 	assert.equal(authorization.status, "authorized", JSON.stringify(authorization));
-	return (authorization as { launch: PolicyLaunch }).launch;
+	// A managed writer launches only under its worktree lease; these launches do not depend on the broker mode.
+	return { ...(authorization as { launch: PolicyLaunch }).launch, toolBroker: { mode: "read-only" } };
 }
 
 describe("managed child launch through the real pi binary", () => {

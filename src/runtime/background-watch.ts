@@ -1,6 +1,6 @@
 import { existsSync, statSync } from "node:fs";
 import { getTerminalAssistantSummary, shouldReapStableTerminalSummary } from "../agents/titles.ts";
-import { releaseWhenEmpty } from "../broker/writer-lease.ts";
+import { containWriterLease, releaseWhenEmpty } from "../broker/writer-lease.ts";
 import { consumeSubagentExitSignal } from "../mux.ts";
 import { hasSubagentExitSidecar } from "../session/exit-sidecar.ts";
 import { findLastSubagentOutputWithSource, getEntries, getEntryCount, getNewEntries } from "../session/session.ts";
@@ -167,8 +167,13 @@ async function watchBackgroundSubagentUntilFinal(
 		}
 	} finally {
 		runtime.cleanupNoSessionSessionFile(running);
-		// The result does not wait: the lease is released once the group is proven empty.
-		if (running.writerLease) void releaseWhenEmpty(running.writerLease);
+		if (running.writerLease) {
+			// A changed identity contains the writer at once, killing whatever of it still runs.
+			const changed = running.writerLease.inspect();
+			if (changed !== null) containWriterLease(running.writerLease, changed);
+			// The result does not wait: the lease is released once the group is proven empty and its tree inspected.
+			void releaseWhenEmpty(running.writerLease);
+		}
 	}
 }
 
