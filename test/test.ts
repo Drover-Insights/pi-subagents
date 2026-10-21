@@ -134,3 +134,4 @@ import "./trusted-launch/resume.test.ts";
 import "./trusted-launch/terminate-contract.test.ts";
 import "./trusted-launch/terminate.test.ts";
 import "./trusted-launch/terminate-lifecycle.test.ts";
+import "./conformance/managed-generation-conformance.test.ts";
