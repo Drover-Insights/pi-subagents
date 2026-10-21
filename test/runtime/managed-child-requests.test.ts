@@ -135,7 +135,7 @@ describe("parent-authorized requests to managed children", () => {
 		usePolicy();
 	});
 
-	it("refuses to resume a managed child until authority-preserving resume exists", async () => {
+	it("refuses to resume a managed child whose launch recorded no authority snapshot", async () => {
 		const dir = createTestDir();
 		const marker = capturePi(dir);
 		const sessionFile = sessionIn(dir);
@@ -164,7 +164,7 @@ describe("parent-authorized requests to managed children", () => {
 					getShellReadyDelayMs: () => 0,
 					runningSubagents: new Map(),
 				} as never),
-			/pilot-worker is policy-managed.*cannot be resumed/,
+			/resume_snapshot_missing/,
 		);
 		assert.equal(existsSync(marker), false);
 	});

@@ -8,7 +8,8 @@ export type ParentClosePolicy = "terminate" | "continue";
 type CompletedDelivery = "steer" | "wait";
 export type SubagentCompletionStatus = "completed" | "failed" | "cancelled";
 export type SubagentSummarySource = "subagent" | "runtime";
-export type ParentShutdownAction = "terminate" | "continue";
+/** `untouched`: a managed child whose ownership could not be proven, left running for recovery. */
+export type ParentShutdownAction = "terminate" | "continue" | "untouched";
 /** Which runtime budget a killed child exceeded. */
 export type SubagentTimeoutKind = "timeout" | "idle-timeout";
 
@@ -185,6 +186,10 @@ export interface RunningSubagent {
 	policyLaunch?: PolicyLaunch;
 	/** A managed writer's lease, released only once every generation's execution group is proven empty. */
 	writerLease?: WriterLease;
+	/** A managed child's durable ownership token, recorded in its launch snapshot. */
+	ownershipToken?: string;
+	/** Why the last stop left this managed child untouched: its ownership did not revalidate. */
+	stopRefusal?: string;
 	/** The generation the writer's current process was recorded under on its lease. */
 	writerGeneration?: number;
 	/** Host PID of the current generation's namespace init, the writer process itself. */

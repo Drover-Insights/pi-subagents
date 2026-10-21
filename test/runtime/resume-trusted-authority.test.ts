@@ -1,7 +1,8 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { ResumeRefusal, type ResumeServiceRuntime, resumeSubagentSession } from "../../src/runtime/resume-service.ts";
+import { ResumeRefusal } from "../../src/runtime/resume-refusal.ts";
+import { type ResumeServiceRuntime, resumeSubagentSession } from "../../src/runtime/resume-service.ts";
 import { resetSpawnWidthForTest } from "../../src/runtime/spawn-width.ts";
 import type { RunningSubagent } from "../../src/types.ts";
 import { assert, createTestDir, writeExecutable } from "../support/index.ts";

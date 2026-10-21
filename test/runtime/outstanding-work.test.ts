@@ -79,7 +79,8 @@ async function harness() {
 		sendMessage: (message: object) => messages.push(message) } as unknown as ExtensionAPI;
 	// SAFETY: Lifecycle test context deliberately excludes unrelated UI/provider methods.
 	const ctx = { mode: "tui", sessionManager: { getSessionFile: () => "parent.jsonl" }, isIdle: () => true } as unknown as ExtensionContext;
-	const reporting = registerOutstandingWorkReporting(pi, async () => ({ publish: async (count) => { counts.push(count); }, stop: async () => {} }));
+	const reporting = registerOutstandingWorkReporting(pi, async () => ({
+		publish: async (count) => { counts.push(count); }, stop: async () => {}, delivery: () => "delivered" as const }));
 	await reporting.start(ctx);
 	return { pi, counts, messages,
 		emit: async (name: string, event = {}) => { await events.get(name)?.(event, ctx); },
@@ -147,4 +148,28 @@ test("session stop detaches reporting before registry cleanup or late watcher ou
 	await h.emit("agent_settled");
 	assert.equal(h.counts.length, count);
 	assert.equal(h.messages.length, 0);
+});
+
+test("reporting surfaces each change of the reporter's delivery state", async () => {
+	resetRuntimeStateForTest(() => {});
+	const events = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+	// SAFETY: Only the event registration boundary is used.
+	const pi = { on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => events.set(name, handler) } as unknown as ExtensionAPI;
+	// SAFETY: Lifecycle test context deliberately excludes unrelated UI/provider methods.
+	const ctx = { mode: "tui", sessionManager: { getSessionFile: () => "parent.jsonl" }, isIdle: () => true } as unknown as ExtensionContext;
+	let delivery: "pending" | "delivered" | "degraded" | "unknown" = "pending";
+	const seen: string[] = [];
+	const reporting = registerOutstandingWorkReporting(
+		pi,
+		async () => ({ publish: async () => {}, stop: async () => { delivery = "unknown"; }, delivery: () => delivery }),
+		(state) => seen.push(state),
+	);
+	await reporting.start(ctx);
+	delivery = "degraded";
+	await events.get("tool_result")?.({}, ctx);
+	delivery = "delivered";
+	await events.get("tool_result")?.({}, ctx);
+	await reporting.stop();
+	assert.deepEqual(seen, ["degraded", "delivered", "unknown"]);
+	resetRuntimeStateForTest(() => {});
 });

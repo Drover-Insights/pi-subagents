@@ -4,8 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentConfigDir, loadAgentDefaults as loadAgentDefaultsFromDefinitions } from "../agents/definitions.ts";
 import { toolBrokerEnv } from "../broker/env-contract.ts";
-import { loadCanonicalPolicy } from "../routing/canonical-policy.ts";
-import { checkResumeRequest } from "../routing/launch-authorization.ts";
+import { recordOwnedGeneration } from "../routing/managed-ownership.ts";
 import { getArtifactStorageRoot } from "../artifact-storage.ts";
 import { buildAppendSystemInheritancePlan } from "../launch/append-system.ts";
 import { getPiInvocation, getSubagentChildProcessEnv } from "../launch/child-command.ts";
@@ -34,7 +33,6 @@ import {
 	resolveResumeLaunchMetadata,
 } from "../launch/resume.ts";
 import { expandSubagentTask } from "../launch/task-expansion.ts";
-import type { TrustedResumeRejection } from "../trusted-launch/contract.ts";
 import { type TrustedResumeExpectation, validateTrustedResumeAuthority } from "../trusted-launch/resume-authority.ts";
 import { resolveSubagentCwd } from "../launch/runtime-paths.ts";
 import { buildInteractiveShellCommand } from "../launch/shell-command.ts";
@@ -44,8 +42,6 @@ import {
 	createSurface,
 	getMuxBackend,
 	muxSetupHint,
-	resolveHerdrPlacementPolicy,
-	resolveZellijPlacementPolicy,
 	sendShellCommand,
 } from "../mux.ts";
 import { clearSubagentExitSidecar } from "../session/exit-sidecar.ts";
@@ -76,6 +72,14 @@ import {
 } from "../tools/timeout-reminders.ts";
 import type { RunningSubagent, SubagentResult } from "../types.ts";
 import {
+	claimManagedResume,
+	decideManagedResume,
+	getManagedResumeLaunchArgs,
+	startClaimedGeneration,
+} from "./managed-resume.ts";
+import { resolveResumeHerdrPlacementPolicy, resolveResumeZellijPlacementPolicy } from "./resume-placement.ts";
+import { ResumeRefusal } from "./resume-refusal.ts";
+import {
 	claimSpawnWidthSlot,
 	getLiveSlotCount,
 	getSpawnWidthLimit,
@@ -97,16 +101,6 @@ export interface ResumeServiceRuntime {
 	modelRegistry?: ResumeModelRegistry;
 }
 
-/** A resume refused before any child process or surface was created. */
-export class ResumeRefusal extends Error {
-	readonly reason: TrustedResumeRejection | "trusted_session";
-	constructor(reason: TrustedResumeRejection | "trusted_session", message: string) {
-		super(message);
-		this.name = "ResumeRefusal";
-		this.reason = reason;
-	}
-}
-
 export interface ResumeSessionInput {
 	sessionFile: string;
 	task?: string;
@@ -121,26 +115,6 @@ export interface ResumeSessionInput {
 	 * other caller field except `task`.
 	 */
 	trusted?: TrustedResumeExpectation;
-}
-
-export function resolveResumeHerdrPlacementPolicy(
-	launchMetadata: PersistedSubagentLaunchMetadata | undefined,
-	parentPolicy: string | undefined,
-): ReturnType<typeof resolveHerdrPlacementPolicy> | undefined {
-	const agentPolicy = parseEnvString(launchMetadata?.env).PI_SUBAGENT_HERDR_PLACEMENT;
-	if (agentPolicy !== undefined) return resolveHerdrPlacementPolicy(agentPolicy);
-	if (parentPolicy !== undefined) return resolveHerdrPlacementPolicy(parentPolicy);
-	return launchMetadata?.herdrPlacementPolicy;
-}
-
-export function resolveResumeZellijPlacementPolicy(
-	launchMetadata: PersistedSubagentLaunchMetadata | undefined,
-	parentPolicy: string | undefined,
-): ReturnType<typeof resolveZellijPlacementPolicy> | undefined {
-	const agentPolicy = parseEnvString(launchMetadata?.env).PI_SUBAGENT_ZELLIJ_PLACEMENT;
-	if (agentPolicy !== undefined) return resolveZellijPlacementPolicy(agentPolicy);
-	if (parentPolicy !== undefined) return resolveZellijPlacementPolicy(parentPolicy);
-	return launchMetadata?.zellijPlacementPolicy;
 }
 
 /**
@@ -213,30 +187,43 @@ async function resumeSubagentSessionWithoutWidth(
 		throw new Error(`Session file not found: ${sessionFile}`);
 	}
 
-	// A trusted resume uses exactly the entry it validated, never a re-read.
-	const explicitMode = isResumeMode(caller.mode) ? caller.mode : undefined;
-	const metadata = trusted
-		? getResumeLaunchMetadata(trusted.metadata)
-		: resolveResumeLaunchMetadata(sessionFile, explicitMode);
-	const launchMetadataEntries = trusted ? [trusted.metadata] : readSubagentLaunchMetadataEntries(sessionFile);
 	if (!trusted && scanLaunchMetadataLines(sessionFile).trusted) {
 		throw new ResumeRefusal(
 			"trusted_session",
 			`Session ${sessionFile} was launched by a trusted extension; only that extension can resume it.`,
 		);
 	}
+	const sessionMetadataEntries = trusted ? [trusted.metadata] : readSubagentLaunchMetadataEntries(sessionFile);
+	// A trusted resume uses exactly the entry it validated, never a re-read.
+	const explicitMode = isResumeMode(caller.mode) ? caller.mode : undefined;
+	const sessionResumeMetadata = trusted
+		? getResumeLaunchMetadata(trusted.metadata)
+		: resolveResumeLaunchMetadata(sessionFile, explicitMode);
+	// A managed child resumes from its recorded launch snapshot alone, narrowed by current policy.
+	const managedDecision = decideManagedResume({
+		sessionFile,
+		sessionAgent: sessionMetadataEntries[0]?.agent ?? sessionResumeMetadata.agent ?? caller.agent,
+		caller: input.trusted ? {} : { model: caller.model, thinking: caller.thinking, mode: caller.mode },
+		trustedLaunchRequestId: input.trusted?.launchRequestId,
+	});
+	if (managedDecision.status === "refused") throw new ResumeRefusal("resume_denied", managedDecision.message);
+	const managed = managedDecision.status === "authorized" ? managedDecision : undefined;
+	const metadata = managed ? getResumeLaunchMetadata(managed.metadata) : sessionResumeMetadata;
+	const launchMetadataEntries = managed ? [managed.metadata] : sessionMetadataEntries;
 	const launchMetadata = launchMetadataEntries[0];
 	const latestLaunchMetadata = launchMetadataEntries[launchMetadataEntries.length - 1];
 	const invocationMetadataSource =
 		launchMetadata && latestLaunchMetadata && latestLaunchMetadata !== launchMetadata
 			? mergeResumeInvocationMetadata(launchMetadata, latestLaunchMetadata)
 			: launchMetadata;
-	const invocationMetadata = resolveResumeLaunchMetadataForInvocation(
-		invocationMetadataSource,
-		caller.model,
-		caller.thinking,
-		runtime.modelRegistry,
-	);
+	const invocationMetadata = managed
+		? managed.metadata
+		: resolveResumeLaunchMetadataForInvocation(
+				invocationMetadataSource,
+				caller.model,
+				caller.thinking,
+				runtime.modelRegistry,
+			);
 	const resumedAutoExit = metadata.mode === "background" ? true : invocationMetadata?.autoExit ?? metadata.autoExit ?? true;
 	const resumedInvocationMetadata =
 		metadata.mode === "background" && invocationMetadata
@@ -244,12 +231,11 @@ async function resumeSubagentSessionWithoutWidth(
 			: invocationMetadata;
 	const shouldPersistInvocationMetadata = invocationMetadata && invocationMetadata !== invocationMetadataSource;
 	const targetAgent = launchMetadata?.agent ?? metadata.agent ?? caller.agent;
-	const resumeBlocked = checkResumeRequest(loadCanonicalPolicy(getAgentConfigDir()), targetAgent);
-	if (resumeBlocked) throw new ResumeRefusal("resume_denied", `Routing policy blocked the request: ${resumeBlocked}.`);
 	const definitionMetadata = launchMetadata ?? invocationMetadataSource;
 	const targetCwd = definitionMetadata ? getResumeDefinitionCwd(definitionMetadata) : process.cwd();
+	// A managed definition comes only from the global directory, as at launch.
 	const targetDefs = targetAgent
-		? loadAgentDefaultsFromDefinitions(targetAgent, undefined, targetCwd, resolveSubagentCwd)
+		? loadAgentDefaultsFromDefinitions(targetAgent, undefined, targetCwd, resolveSubagentCwd, { globalOnly: managed !== undefined })
 		: null;
 	const callerEnv = parseSpawnEnv(process.env);
 	const targetSpawning =
@@ -306,15 +292,18 @@ async function resumeSubagentSessionWithoutWidth(
 	clearSubagentTimeoutSidecar(sessionFile);
 	const subagentDonePath = join(dirname(fileURLToPath(import.meta.url)), "..", "tools", "subagent-done.ts");
 	const savedExtensions = invocationMetadata ? invocationMetadata.extensions : readSubagentExtensionEntry(sessionFile);
-	const extensionArgs =
-		invocationMetadata !== undefined || savedExtensions !== undefined
+	const extensionArgs = managed
+		? []
+		: invocationMetadata !== undefined || savedExtensions !== undefined
 			? getExtensionLaunchArgs(savedExtensions, subagentDonePath, narrowedSpawnBudget > 0)
 			: ["--no-extensions", "-e", subagentDonePath];
-	const parityArgs = [
-		...getPersistedPromptLaunchArgs(invocationMetadata),
-		...(await getPersistedSessionParityArgs(invocationMetadata, metadata.mode, narrowedSpawnBudget > 0)),
-		...(invocationMetadata ? [] : ["--no-approve"]),
-	];
+	const parityArgs = managed
+		? getManagedResumeLaunchArgs(managed)
+		: [
+				...getPersistedPromptLaunchArgs(invocationMetadata),
+				...(await getPersistedSessionParityArgs(invocationMetadata, metadata.mode, narrowedSpawnBudget > 0)),
+				...(invocationMetadata ? [] : ["--no-approve"]),
+			];
 	const resumeCwd = trustedCwd ?? getResumeCwd(invocationMetadata);
 	const expandedTask = task
 		? await expandSubagentTask(task, {
@@ -374,7 +363,7 @@ async function resumeSubagentSessionWithoutWidth(
 	resumeEnvVars.PI_SUBAGENT_SPAWN_WIDTH_EFFECTIVE = resumeSpawnEnv.PI_SUBAGENT_SPAWN_WIDTH_EFFECTIVE;
 	if (savedExtensions !== undefined) {
 		resumeEnvVars.PI_SUBAGENT_EXTENSIONS = savedExtensions.join(",");
-	} else if (process.env.PI_SUBAGENT_EXTENSIONS) {
+	} else if (process.env.PI_SUBAGENT_EXTENSIONS && !managed) {
 		resumeEnvVars.PI_SUBAGENT_EXTENSIONS = process.env.PI_SUBAGENT_EXTENSIONS;
 	}
 	resumeEnvVars[PI_SUBAGENT_SKILL_VISIBILITY] = getSkillVisibilitySpec(invocationMetadata?.skills);
@@ -410,8 +399,8 @@ async function resumeSubagentSessionWithoutWidth(
 	resumeEnvVars.PI_SUBAGENT_AUTO_EXIT = resumedAutoExit ? "1" : "";
 	resumeEnvVars.PI_PACKAGE_DIR = "";
 	resumeEnvVars.PI_ARTIFACT_PROJECT_ROOT = getArtifactStorageRoot();
-	// Managed children cannot resume yet (checkResumeRequest), so no resumed child is brokered.
-	Object.assign(resumeEnvVars, toolBrokerEnv(undefined));
+	Object.assign(resumeEnvVars, toolBrokerEnv(managed?.launch));
+	const managedTicket = managed ? claimManagedResume(sessionFile, managed) : undefined;
 
 	const id = Math.random().toString(16).slice(2, 10);
 	const running: RunningSubagent = {
@@ -439,6 +428,9 @@ async function resumeSubagentSessionWithoutWidth(
 		modelContextWindow: runtime.getContextWindow(invocationMetadata?.modelRef),
 		modelRef: invocationMetadata?.modelRef,
 		launchMetadata: resumedInvocationMetadata,
+		...(managed
+			? { routing: managed.evidence, policyLaunch: managed.launch }
+			: {}),
 	};
 
 	if (metadata.mode === "background") {
@@ -447,15 +439,17 @@ async function resumeSubagentSessionWithoutWidth(
 			...extensionArgs,
 			...parityArgs,
 		]);
-		const child = spawn(invocation.command, invocation.args, {
-			...(resumeCwd ? { cwd: resumeCwd } : {}),
-			detached: true,
-			stdio:
-				running.parentClosePolicy === "continue"
-					? (["pipe", "ignore", "ignore"] as const)
-					: (["pipe", "pipe", "pipe"] as const),
-			env: getSubagentChildProcessEnv(invocation, resumeEnvVars, resolveDenyEnvPatterns(invocationMetadata?.denyEnv)),
-		});
+		const child = await startClaimedGeneration(sessionFile, managedTicket, () =>
+			spawn(invocation.command, invocation.args, {
+				...(resumeCwd ? { cwd: resumeCwd } : {}),
+				detached: true,
+				stdio:
+					running.parentClosePolicy === "continue"
+						? (["pipe", "ignore", "ignore"] as const)
+						: (["pipe", "pipe", "pipe"] as const),
+				env: getSubagentChildProcessEnv(invocation, resumeEnvVars, resolveDenyEnvPatterns(invocationMetadata?.denyEnv)),
+			}),
+		);
 		if (expandedTask !== undefined) {
 			child.stdin?.end(expandedTask);
 		} else {
@@ -463,6 +457,9 @@ async function resumeSubagentSessionWithoutWidth(
 		}
 		child.unref();
 		running.childProcess = child;
+		if (managed && managedTicket) {
+			recordOwnedGeneration(getAgentConfigDir(), running, managed.snapshot.ownershipToken, managedTicket.generation);
+		}
 		child.stdout?.on("data", (chunk: Buffer) => {
 			running.stdoutTail = rememberOutputTail(running.stdoutTail, chunk);
 		});

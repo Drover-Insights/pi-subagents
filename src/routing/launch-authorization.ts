@@ -260,15 +260,3 @@ export function checkManagedChildRequest(
 	}
 	return null;
 }
-
-/**
- * Resume of a policy-managed child fails closed until resume can prove it
- * preserves the launch authority (#8). Returns the blocking reason, or null.
- */
-export function checkResumeRequest(policyState: CanonicalPolicyState, agent: string | undefined): string | null {
-	if (policyState.status === "invalid") return `the routing policy is invalid: ${policyState.message}`;
-	if (policyState.status === "absent" || agent === undefined || !Object.hasOwn(policyState.policy.aliases, agent)) {
-		return null;
-	}
-	return `agent ${agent} is policy-managed and cannot be resumed until resume preserves its launch authority`;
-}

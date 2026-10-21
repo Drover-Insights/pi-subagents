@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { AgentDefaults } from "../agents/definitions.ts";
+import { type AgentDefaults, getAgentConfigDir } from "../agents/definitions.ts";
 import { getSubagentNameError } from "../agents/titles.ts";
 import {
 	enforceAgentFrontmatter,
@@ -16,6 +16,7 @@ import {
 	releaseSpawnWidthSlotOnCompletion,
 	tryAcquireSlots,
 } from "../runtime/spawn-width.ts";
+import { recordManagedLaunchSnapshot } from "../routing/managed-resume-authority.ts";
 import { asSubagentToolResult, markSubagentBatchBlocking } from "../runtime/state.ts";
 import { parseSpawnEnv, resolveSpawnPolicy } from "../spawn/policy.ts";
 import type { SandboxProbe } from "../broker/sandbox-run.ts";
@@ -287,9 +288,12 @@ export async function launchSubagentEntries(
 				writerLeases[index],
 			);
 			const evidence = routing[index].evidence;
-			if (evidence.status === "managed") {
+			const policyLaunch = routing[index].policyLaunch;
+			if (evidence.status === "managed" && policyLaunch) {
 				running.routing = evidence;
-				running.policyLaunch = routing[index].policyLaunch;
+				running.policyLaunch = policyLaunch;
+				// A refused snapshot leaves the child running but never resumable.
+				recordManagedLaunchSnapshot(getAgentConfigDir(), running, routing[index].launchId, evidence, policyLaunch);
 			}
 			unlaunchedSlots -= slotCosts[index];
 			launched.push(running);

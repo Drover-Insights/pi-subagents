@@ -10,7 +10,7 @@ import {
 	requestSubagentBatchStop,
 	runningSubagents,
 } from "./state.ts";
-import { terminateBackgroundChildProcess } from "./shutdown.ts";
+import { StopRefusedError, stopOwnershipRefusal, terminateBackgroundChildProcess } from "./shutdown.ts";
 import { releaseSpawnWidthSlot } from "./spawn-width.ts";
 
 export interface RunningRegistryRuntime {
@@ -110,6 +110,13 @@ export async function stopRunningSubagent(
 	running: RunningSubagent,
 	closeSurface: (running: RunningSubagent) => Promise<void>,
 ): Promise<void> {
+	// A managed child whose ownership cannot be proven is left untouched and
+	// tracked: its watcher keeps running and it keeps its slot.
+	const refusal = stopOwnershipRefusal(running);
+	if (refusal) {
+		running.stopRefusal = refusal;
+		throw new StopRefusedError(refusal);
+	}
 	clearSubagentShutdownTimer(running);
 	running.abortController?.abort();
 

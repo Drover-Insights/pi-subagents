@@ -151,9 +151,14 @@ export function classifySupervisor(
 	}
 }
 
-function startTimeOf(pid: number, reader: ProcReader): string {
-	const stat = reader.stat(pid);
-	const started = stat.slice(stat.lastIndexOf(")") + 2).trim().split(" ")[19];
+/** The fields of a `/proc/<pid>/stat` line after the command name, from field 3 (state) on. */
+export function statFields(stat: string): string[] {
+	return stat.slice(stat.lastIndexOf(")") + 2).trim().split(" ");
+}
+
+/** Field 22 of `/proc/<pid>/stat`: a process start time no reused PID repeats. Throws when unreadable. */
+export function readProcessStartTime(pid: number, reader: ProcReader = procReader): string {
+	const started = statFields(reader.stat(pid))[19];
 	if (!started || !/^\d+$/.test(started)) throw new Error(`malformed /proc/${pid}/stat`);
 	return started;
 }
@@ -162,7 +167,7 @@ function startTimeOf(pid: number, reader: ProcReader): string {
 export function readSupervisorIdentity(reader: ProcReader = procReader): SupervisorIdentity {
 	return {
 		pid: process.pid,
-		startTime: startTimeOf(process.pid, reader),
+		startTime: readProcessStartTime(process.pid, reader),
 		pidNamespace: reader.pidNamespace("self"),
 		bootId: reader.bootId(),
 	};
@@ -170,5 +175,5 @@ export function readSupervisorIdentity(reader: ProcReader = procReader): Supervi
 
 /** The identity of a freshly started namespace init, read before it is released to run. */
 export function readExecutionGroup(initPid: number, pidNamespace: string, reader: ProcReader = procReader): ExecutionGroup {
-	return { initPid, startTime: startTimeOf(initPid, reader), pidNamespace, bootId: reader.bootId() };
+	return { initPid, startTime: readProcessStartTime(initPid, reader), pidNamespace, bootId: reader.bootId() };
 }

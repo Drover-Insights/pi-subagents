@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { ResumeRefusal, type ResumeServiceRuntime, resumeSubagentSession } from "../runtime/resume-service.ts";
+import { ResumeRefusal } from "../runtime/resume-refusal.ts";
+import { type ResumeServiceRuntime, resumeSubagentSession } from "../runtime/resume-service.ts";
 import type { SubagentToolRuntime } from "../tools/subagent-launch.ts";
 import type { PersistedSubagentLaunchMetadata } from "../session/session-files.ts";
 import type { RunningSubagent, TrustedLaunchProvenance } from "../types.ts";

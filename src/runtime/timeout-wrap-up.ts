@@ -4,6 +4,8 @@ import { toolBrokerEnv } from "../broker/env-contract.ts";
 import { requireEarlierGenerationsEmpty, spawnLeasedWriter } from "../broker/writer-spawn.ts";
 import { loadCanonicalPolicy } from "../routing/canonical-policy.ts";
 import { checkManagedChildRequest } from "../routing/launch-authorization.ts";
+import { claimNextGeneration, recordOwnedGeneration } from "../routing/managed-ownership.ts";
+import { startClaimedGeneration } from "./managed-resume.ts";
 import { verifyPolicyLaunch } from "../routing/resource-verification.ts";
 import { getArtifactStorageRoot } from "../artifact-storage.ts";
 import { buildAppendSystemInheritancePlan } from "../launch/append-system.ts";
@@ -199,8 +201,20 @@ export async function restartSubagentForTimeoutWrapUp(
 		const stdio: ["pipe", "ignore" | "pipe", "ignore" | "pipe"] =
 			running.parentClosePolicy === "continue" ? ["pipe", "ignore", "ignore"] : ["pipe", "pipe", "pipe"];
 		const env = getSubagentChildProcessEnv(invocation, launch.env, resolveDenyEnvPatterns(running.launchMetadata?.denyEnv));
-		let child: ChildProcess;
-		if (running.writerLease) {
+		// The continuation is the managed child's next owned generation, claimed before it starts.
+		const ownershipToken = running.ownershipToken;
+		const claim = ownershipToken === undefined ? undefined : claimNextGeneration(getAgentConfigDir(), running.sessionFile);
+		if (claim && "refusal" in claim) throw new Error(`Routing policy blocked the request: ${claim.refusal}.`);
+		const ticket = claim && "generation" in claim ? claim : undefined;
+		const child: ChildProcess = await startClaimedGeneration(running.sessionFile, ticket, async () => {
+			if (!running.writerLease) {
+				return spawn(invocation.command, invocation.args, {
+					...(launch.cwd ? { cwd: launch.cwd } : {}),
+					detached: true,
+					stdio,
+					env,
+				});
+			}
 			const generation = (running.writerGeneration ?? 1) + 1;
 			const writer = await spawnLeasedWriter(running.writerLease, generation, {
 				command: invocation.command,
@@ -209,18 +223,12 @@ export async function restartSubagentForTimeoutWrapUp(
 				env,
 				stdio,
 			});
-			child = writer.child;
 			running.writerGeneration = generation;
 			running.writerInitPid = writer.group.initPid;
-		} else {
-			child = spawn(invocation.command, invocation.args, {
-				...(launch.cwd ? { cwd: launch.cwd } : {}),
-				detached: true,
-				stdio,
-				env,
-			});
-		}
+			return writer.child;
+		});
 		running.childProcess = child;
+		if (ownershipToken !== undefined && ticket) recordOwnedGeneration(getAgentConfigDir(), running, ownershipToken, ticket.generation);
 		child.stdin?.end(launch.prompt);
 		child.unref();
 		child.stdout?.on("data", (chunk: Buffer) => {

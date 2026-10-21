@@ -1,4 +1,6 @@
 import type { CompletedSubagentResult, ParentClosePolicy, ParentShutdownAction, RunningSubagent } from "../types.ts";
+import { getAgentConfigDir } from "../agents/definitions.ts";
+import { revalidateOwnedProcess, revalidateOwnedSurface } from "../routing/managed-ownership.ts";
 import { clearSubagentShutdownTimer } from "./state.ts";
 
 export type ShutdownSubagentsOptions = {
@@ -13,8 +15,37 @@ export interface ShutdownRuntime {
 	closeRunningSurface(running: RunningSubagent): Promise<void>;
 }
 
+/** A stop the parent refused because it cannot prove it owns the child's process; nothing was touched. */
+export class StopRefusedError extends Error {
+	readonly reason: string;
+	constructor(reason: string) {
+		super(`The subagent was left running: its ownership could not be proven (${reason}).`);
+		this.name = "StopRefusedError";
+		this.reason = reason;
+	}
+}
+
+/**
+ * Why the parent may not stop a managed child now, or null: its surface is
+ * not the recorded one, or its process group's ownership does not
+ * revalidate. Unmanaged children, and managed ones whose owner was never
+ * recorded, are stopped through the handle and surface this parent created.
+ */
+export function stopOwnershipRefusal(running: RunningSubagent): string | null {
+	if (running.ownershipToken === undefined) return null;
+	const surfaceRefusal = revalidateOwnedSurface(getAgentConfigDir(), running);
+	if (surfaceRefusal) return surfaceRefusal;
+	const pid = running.childProcess?.pid;
+	return pid ? revalidateOwnedProcess(getAgentConfigDir(), running, pid) : null;
+}
+
 export function terminateBackgroundChildProcess(running: RunningSubagent, signal: NodeJS.Signals): void {
 	if (!running.childProcess?.pid) return;
+	// A managed child is signalled only once its durable ownership revalidates;
+	// otherwise it is left untouched, and the reason stays on its record.
+	const refusal = stopOwnershipRefusal(running);
+	running.stopRefusal = refusal ?? undefined;
+	if (refusal) return;
 	// A writer's launcher dies at once from a stop signal, while the writer, the
 	// init of its own PID namespace, ignores any signal it has no handler for.
 	// While the launcher still holds the writer, its PID cannot be reused: signal
@@ -89,6 +120,14 @@ export async function shutdownSubagentsForParentExit(
 			continue;
 		}
 
+		// A child whose ownership cannot be proven is left untouched; its durable
+		// owner record keeps it visible to the next session's recovery check.
+		const refusal = stopOwnershipRefusal(agent);
+		if (refusal) {
+			agent.stopRefusal = refusal;
+			actions.push({ id: agent.id, policy: agent.parentClosePolicy, action: "untouched" });
+			continue;
+		}
 		actions.push({
 			id: agent.id,
 			policy: agent.parentClosePolicy,
