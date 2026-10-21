@@ -16,6 +16,7 @@
 		".": "./src/index.ts",
 		"./trusted-launch": "./src/trusted-launch/public.ts",
 		"./trusted-launch/fake": "./src/trusted-launch/fake.ts",
+		"./pilot-evidence": "./src/routing/pilot-evidence.ts",
 		"./package.json": "./package.json"
 	},
 	"scripts": {

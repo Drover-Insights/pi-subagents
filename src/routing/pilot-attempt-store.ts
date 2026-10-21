@@ -19,6 +19,7 @@ import { randomBytes } from "node:crypto";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
+	canonicalJson,
 	existingPrivateDirectory,
 	isObject,
 	linkRecord,
@@ -102,12 +103,48 @@ type AppendedRecord = {
 	at: string;
 };
 
-const RESERVATION_FILE = /^reservation-(\d+)\.json$/;
-const RECORD_FILE = /^(resume|block|verdict)-([0-9a-f]{64})-(\d+)\.json$/;
+/** The store's directory name under the agent directory. */
+export const PILOT_ATTEMPT_DIRECTORY = "pilot-attempts";
+export const RESERVATION_FILE = /^reservation-(\d+)\.json$/;
+export const RECORD_FILE = /^(resume|block|verdict)-([0-9a-f]{64})-(\d+)\.json$/;
 const RECORD_KINDS: readonly string[] = ["resume", "block", "verdict"];
 
-function caseDirectory(root: string, caseId: string): string {
+export function caseDirectory(root: string, caseId: string): string {
 	return join(root, sha256(caseId));
+}
+
+/** Throw unless `value` is something `JSON.parse` can produce, so no value hashes as a bogus encoding. */
+function assertJsonValue(value: unknown, path: string, ancestors: Set<object> = new Set()): void {
+	if (value === null || typeof value === "string" || typeof value === "boolean") return;
+	if (typeof value === "number") {
+		if (Number.isFinite(value)) return;
+		throw new TypeError(`${path} is not a finite number`);
+	}
+	if (typeof value !== "object") throw new TypeError(`${path} is a ${typeof value}, not a JSON value`);
+	if (ancestors.has(value)) throw new TypeError(`${path} is a cycle`);
+	ancestors.add(value);
+	if (Array.isArray(value)) {
+		for (let index = 0; index < value.length; index++) {
+			if (!(index in value)) throw new TypeError(`${path}[${index}] is a hole`);
+			assertJsonValue(value[index], `${path}[${index}]`, ancestors);
+		}
+	} else {
+		const prototype = Object.getPrototypeOf(value);
+		if (prototype !== Object.prototype && prototype !== null) throw new TypeError(`${path} is not a plain object`);
+		for (const [key, child] of Object.entries(value)) assertJsonValue(child, `${path}.${key}`, ancestors);
+	}
+	ancestors.delete(value);
+}
+
+/**
+ * A pilot case's identity for its durable attempts: `sha256:` and the
+ * lowercase hex SHA-256 of the UTF-8 bytes of the case's policy record as
+ * canonical JSON, so any edit to the case is a different case to the store.
+ * Throws a TypeError for a value JSON cannot carry.
+ */
+export function pilotCaseDigest(caseRecord: unknown): string {
+	assertJsonValue(caseRecord, "caseRecord");
+	return `sha256:${sha256(canonicalJson(caseRecord))}`;
 }
 
 function readReservation(dir: string, number: number): ReservationRecord | null {

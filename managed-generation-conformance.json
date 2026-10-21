@@ -13,7 +13,7 @@
 		"resources": [
 			{
 				"path": "package.json",
-				"sha256": "0fc4eac94bc318ab5aedc3b0dd80ecaea2c50134611ba02210a3ad7457c5ab88"
+				"sha256": "519979dbf9f9f21b5ed5e157392850cf1e7bce08fa1e6e9b5a69511d51fbf0b5"
 			},
 			{
 				"path": "src/index.ts",

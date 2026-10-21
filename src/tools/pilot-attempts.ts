@@ -11,6 +11,7 @@ import { WriterSpawnError } from "../broker/writer-spawn.ts";
 import {
 	commitPilotAttempt,
 	markPilotAttemptRecovery,
+	PILOT_ATTEMPT_DIRECTORY,
 	type PilotAttemptHandle,
 	type PilotReceipt,
 	refundPilotAttempt,
@@ -23,7 +24,7 @@ import { policyRejection, type SubagentRouting } from "./subagent-routing.ts";
 type ToolResult = ReturnType<typeof asSubagentToolResult>;
 
 function getPilotAttemptRoot(): string {
-	return join(getAgentConfigDir(), "pilot-attempts");
+	return join(getAgentConfigDir(), PILOT_ATTEMPT_DIRECTORY);
 }
 
 function errorMessage(error: unknown): string {
