@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { type AgentDefaults, getAgentConfigDir } from "../agents/definitions.ts";
 import { checkToolBroker } from "../broker/preflight.ts";
 import type { SandboxProbe } from "../broker/sandbox-run.ts";
@@ -9,7 +8,7 @@ import { resolveSubagentCwd } from "../launch/runtime-paths.ts";
 import { loadCanonicalPolicy, type RoutingInteractionMode } from "../routing/canonical-policy.ts";
 import { authorizeLaunch, type ManagedRoutingEvidence } from "../routing/launch-authorization.ts";
 import { verifyPolicyLaunch } from "../routing/resource-verification.ts";
-import { canonicalJson } from "../routing/write-once-records.ts";
+import { pilotCaseDigest } from "../routing/pilot-attempt-store.ts";
 import { asSubagentToolResult } from "../runtime/state.ts";
 import type { PolicyLaunch, SubagentParamsInput } from "../types.ts";
 
@@ -26,13 +25,8 @@ export type SubagentRouting = {
 
 type PilotCaseRef = { caseId: string; caseDigest: string; allowed: number };
 
-/**
- * A pilot case's identity for its durable attempts: the digest of its whole
- * policy record, so any edit to the case is a different case to the store.
- */
 function pilotCaseRef(caseId: string, record: { attempts: { allowed: number } }): PilotCaseRef {
-	const caseDigest = `sha256:${createHash("sha256").update(canonicalJson(record)).digest("hex")}`;
-	return { caseId, caseDigest, allowed: record.attempts.allowed };
+	return { caseId, caseDigest: pilotCaseDigest(record), allowed: record.attempts.allowed };
 }
 
 type RoutingOptions = {

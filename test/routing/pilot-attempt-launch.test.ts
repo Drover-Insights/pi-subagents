@@ -11,6 +11,7 @@ import { buildSandboxPlan } from "../../src/broker/sandbox-plan.ts";
 import { probeSandbox, runInSandbox } from "../../src/broker/sandbox-run.ts";
 import { WriterSpawnError } from "../../src/broker/writer-spawn.ts";
 import { readPilotCase, reservePilotAttempt } from "../../src/routing/pilot-attempt-store.ts";
+import { pilotCaseDigest, readPilotEvidence } from "../../src/routing/pilot-evidence.ts";
 import { getLiveSlotCount } from "../../src/runtime/spawn-width.ts";
 import { settleFailedPilotAttempt } from "../../src/tools/pilot-attempts.ts";
 import { launchSubagentEntries } from "../../src/tools/subagent-launch.ts";
@@ -206,6 +207,18 @@ describe("durable pilot attempts through the launch phase", () => {
 			controller: { provider: "openai-codex", model: "gpt-6-sol", effort: "medium" },
 			runtime: { pi: { command: fakePi, commandSha256: sha256(readFileSync(fakePi)), entry: null, package: null } },
 		});
+	});
+
+	test("the exported case digest equals the digest the reservation recorded, and changes with the case", async () => {
+		await harness().run([scout()]);
+
+		const evidence = readPilotEvidence({ agentDir, caseId: "scout-literal-1", launchId: "dispatch-1" });
+
+		assert.equal(evidence.status, "found", JSON.stringify(evidence));
+		const approved = policy.pilotCases["scout-literal-1"];
+		assert.equal(evidence.status === "found" && evidence.evidence.caseDigest, pilotCaseDigest(approved));
+		assert.equal(evidence.status === "found" && evidence.evidence.reservation.receipt.caseDigest, pilotCaseDigest(approved));
+		assert.notEqual(pilotCaseDigest({ ...approved, expires: "2998-01-01T00:00:00Z" }), pilotCaseDigest(approved));
 	});
 
 	test("an exhausted case rejects the launch and consumes nothing more", async () => {

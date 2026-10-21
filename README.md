@@ -1000,6 +1000,27 @@ Downstream tests can use `createFakeTrustedSubagents` from `pi-subagents/trusted
 
 These entrypoints are TypeScript sources. Pi's extension loader imports them directly; plain Node refuses TypeScript under `node_modules`, so a test runner needs a TypeScript-capable loader or a linked install.
 
+## Reading pilot evidence
+
+A readiness consumer reads what a pilot launch left in the [pilot attempt store](#canonical-routing-policy) through `pi-subagents/pilot-evidence`. The entrypoint is read-only: importing it loads only Node built-ins and the store's record formats, so it registers no extension, launches no child, probes no runtime identity, and no call writes or creates a file. It exports no writer.
+
+```ts
+import { pilotCaseDigest, readPilotEvidence } from "pi-subagents/pilot-evidence";
+
+const result = readPilotEvidence({ agentDir, caseId: "scout-literal-1", launchId });
+```
+
+`agentDir` is Pi's agent directory, the one holding `drover-model-routing.json` (`PI_CODING_AGENT_DIR`, or `~/.pi/agent`); the store is its `pilot-attempts/`. The result is a point-in-time read and never throws:
+
+- `found`: `evidence` holds the case id and the digest `case.json` recorded, and the launch's reservation: its number, `reservedAt`, the write-once receipt (policy generation, case digest, Controller provider, model and thinking level, runtime identity), and the outcome as accounting reads it (`pending`, `committed`, `refunded`, or `unknown` for a damaged or foreign outcome; the reader also counts an outcome file that is a symlink as `unknown`, where accounting would follow it). `recovery` is `null`, `{ reason }`, or `{ unreadable: true }` for a damaged marker. `resume`, `block` and `verdict` list every record of the launch as `{ sequence, body, at }`, in sequence order.
+- `missing`, with a `code`: `store` (no store under `agentDir`, often the wrong directory), `case`, `case_record`, `launch_unclaimed` (the launch never reached this case), or `launch_not_reserved` (the launch claimed its id but has no reservation: it was refused, for example with every attempt used, stopped before reserving, or is reserving at this moment).
+- `unreadable`: a read failed, or the store or case directory is reachable by other users, a symlink, or owned by another user.
+- `invalid`: a file that is a symlink or not a regular file, or that reads but does not parse, has the wrong shape, disagrees with its file name, case id or case digest, or a numbering the store never writes: a gap that a second directory listing still shows, a leading zero, two reservations for the launch, a reservation without its launch claim, or records under a reservation that is not committed or under no reservation at all.
+
+When no readable reservation names the launch and another reservation is unreadable or invalid, the result is that failure, not `missing`: the damaged one could be the launch's. Any damaged resume, block or verdict record of the launch makes the whole result `invalid`.
+
+`pilotCaseDigest(caseRecord)` is the function reservation uses. Its input is the case's value under `pilotCases` in `drover-model-routing.json`, as `JSON.parse` returns it. It serializes that value as canonical JSON: object keys sorted by UTF-16 code units at every level, array order kept, keys and primitive values written by `JSON.stringify`, and no whitespace. This is not RFC 8785. The digest is `sha256:` followed by the lowercase hex SHA-256 of that string's UTF-8 bytes. Any value other than `null`, a boolean, a string, a finite number, a dense array or a plain object of such values, and any cyclic value, throws a `TypeError`.
+
 ## Environment variables
 
 User-facing knobs:
