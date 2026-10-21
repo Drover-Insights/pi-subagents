@@ -29,3 +29,8 @@ export function writerRepo(base = tmpdir()) {
 	return { root, main, linked, head, common: join(main, ".git"), gitDir: join(main, ".git", "worktrees", "linked") };
 }
 
+
+/** The identity a writer of `repo`'s linked worktree is pinned to. */
+export function pinnedOf(repo: ReturnType<typeof writerRepo>) {
+	return { top: repo.linked, commonDir: repo.common, worktreeGitDir: repo.gitDir, branch: "task" };
+}

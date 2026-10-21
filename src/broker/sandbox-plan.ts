@@ -6,11 +6,14 @@
  * in JavaScript, never by running `git`, and a `.git` file is followed only
  * when it has the exact shape of a linked worktree of a real repository. Git
  * metadata is always mounted read-only: whatever a tool writes there would
- * run later in Git outside the sandbox. Never throws: every failure becomes a
+ * run later in Git outside the sandbox. A writer's plan is pinned to the
+ * worktree identity the parent validated: any difference is a `mismatch`,
+ * which the caller contains. Never throws: every other failure becomes a
  * `rejected` plan.
  */
 import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, resolve, sep } from "node:path";
+import type { PinnedWorktree } from "./env-contract.ts";
 
 export type BrokerMode = "read-only" | "writer";
 
@@ -23,9 +26,14 @@ export type SandboxPlanInput = {
 	protectedAncestors?: readonly string[];
 	/** Tool name to executable file; each is bound read-only at `/opt/pi-broker/bin/<name>`. */
 	executables?: Readonly<Record<string, string>>;
+	/** The worktree a writer is pinned to; required in writer mode. */
+	identity?: PinnedWorktree;
 };
 
-export type SandboxPlan = { status: "ready"; args: string[]; cwd: string } | { status: "rejected"; message: string };
+export type SandboxPlan =
+	| { status: "ready"; args: string[]; cwd: string }
+	| { status: "rejected"; message: string }
+	| { status: "mismatch"; message: string };
 
 const BIN_DIR = "/opt/pi-broker/bin";
 const SANDBOX_HOME = "/tmp/home";
@@ -53,6 +61,7 @@ const EXECUTABLE_NAME = /^[A-Za-z0-9._-]+$/;
 export type Repository = { top: string; commonDir?: string; gitDir?: string; linkFile?: string };
 
 class PlanError extends Error {}
+class MismatchError extends Error {}
 
 /** True when `parent` equals `child` or is a path-segment ancestor of it. */
 export function contains(parent: string, child: string): boolean {
@@ -157,6 +166,54 @@ export function findRepository(realCwd: string): { status: "found"; repository: 
 	}
 }
 
+/** The branch a worktree's HEAD names; throws for a detached or unreadable HEAD. */
+function headBranch(gitDir: string): string {
+	const match = /^ref: refs\/heads\/(.+)$/.exec(readControlFile(resolve(gitDir, "HEAD")));
+	if (!match) throw new MismatchError(`the worktree's HEAD is not on a branch: ${gitDir}`);
+	return match[1] as string;
+}
+
+/** The repository at `cwd`, which must be exactly the pinned worktree. Throws a `MismatchError` otherwise. */
+function pinnedRepository(cwd: string, pinned: PinnedWorktree): Repository {
+	let real: string;
+	try {
+		real = realpathSync(cwd);
+	} catch {
+		throw new MismatchError(`the working directory ${cwd} does not exist; its pinned worktree is ${pinned.top}`);
+	}
+	if (!contains(pinned.top, real)) throw new MismatchError(`${real} is outside its pinned worktree ${pinned.top}`);
+	let repo: Repository;
+	try {
+		repo = discoverRepository(real);
+	} catch (error) {
+		throw new MismatchError(`the pinned worktree ${pinned.top} no longer reads as one: ${(error as Error).message}`);
+	}
+	if (repo.top !== pinned.top) throw new MismatchError(`the repository at ${repo.top} is not the pinned worktree ${pinned.top}`);
+	if (repo.gitDir !== pinned.worktreeGitDir || repo.commonDir !== pinned.commonDir) {
+		throw new MismatchError(
+			`the worktree's Git directory ${repo.gitDir ?? "(none)"} is not the pinned ${pinned.worktreeGitDir}`,
+		);
+	}
+	let branch: string;
+	try {
+		branch = headBranch(pinned.worktreeGitDir);
+	} catch (error) {
+		throw error instanceof MismatchError ? error : new MismatchError(`cannot read the worktree's HEAD: ${(error as Error).message}`);
+	}
+	if (branch !== pinned.branch) throw new MismatchError(`the worktree is on branch ${branch}, not the pinned ${pinned.branch}`);
+	return repo;
+}
+
+/** Null when `cwd` lies in exactly the pinned worktree, on its pinned branch; otherwise why not. Never throws. */
+export function checkPinnedWorktree(cwd: string, pinned: PinnedWorktree): string | null {
+	try {
+		pinnedRepository(cwd, pinned);
+		return null;
+	} catch (error) {
+		return error instanceof Error ? error.message : String(error);
+	}
+}
+
 function checkRoot(root: string, input: SandboxPlanInput): void {
 	const system = SYSTEM_TREES.find((tree) => contains(realOrResolved(tree), root) || contains(tree, root));
 	if (system !== undefined) throw new PlanError(`sandbox root ${root} is inside the system tree ${system}`);
@@ -201,10 +258,12 @@ function executableArgs(executables: Readonly<Record<string, string>>): string[]
 }
 
 function plan(input: SandboxPlanInput): SandboxPlan {
+	if (input.mode === "writer" && !input.identity) throw new PlanError("a writer sandbox needs its pinned worktree identity");
+	const pinned = input.identity ? pinnedRepository(input.cwd, input.identity) : undefined;
 	const realCwd = realExisting(input.cwd, "working directory");
 	if (!statSync(realCwd).isDirectory()) throw new PlanError(`working directory is not a directory: ${realCwd}`);
 
-	const repo = discoverRepository(realCwd);
+	const repo = pinned ?? discoverRepository(realCwd);
 	const roots = [repo.top, ...(repo.commonDir && !contains(repo.top, repo.commonDir) ? [repo.commonDir] : [])];
 	for (const root of roots) checkRoot(root, input);
 
@@ -259,6 +318,7 @@ export function buildSandboxPlan(input: SandboxPlanInput): SandboxPlan {
 	try {
 		return plan(input);
 	} catch (error) {
-		return { status: "rejected", message: error instanceof Error ? error.message : String(error) };
+		const message = error instanceof Error ? error.message : String(error);
+		return error instanceof MismatchError ? { status: "mismatch", message } : { status: "rejected", message };
 	}
 }

@@ -16,7 +16,6 @@ import {
 	truncateHead,
 	truncateLine,
 } from "@earendil-works/pi-coding-agent";
-import type { BrokerMode } from "./sandbox-plan.ts";
 import {
 	type BrokerScope,
 	requireSearchBinary,
@@ -189,10 +188,10 @@ async function runGrep(scope: BrokerScope, cwd: string, input: GrepToolInput, si
 	return { content: [{ type: "text", text: output }], details: Object.keys(details).length > 0 ? details : undefined };
 }
 
-/** Pi's grep definition whose search runs inside the sandbox. */
-export function createBrokeredGrepDefinition(mode: BrokerMode): ReturnType<typeof createGrepToolDefinition> {
+/** Pi's grep definition whose search runs inside the sandbox of `scope`, with the call's abort signal. */
+export function createBrokeredGrepDefinition(scope: BrokerScope): ReturnType<typeof createGrepToolDefinition> {
 	const base = createGrepToolDefinition(process.cwd());
 	const execute: typeof base.execute = (_toolCallId, params, signal, _onUpdate, ctx) =>
-		runGrep({ mode, ...(signal ? { signal } : {}) }, ctx?.cwd || process.cwd(), params, signal);
+		runGrep({ ...scope, ...(signal ? { signal } : {}) }, ctx?.cwd || process.cwd(), params, signal);
 	return { ...base, execute };
 }

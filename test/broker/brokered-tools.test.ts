@@ -14,10 +14,11 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { after, before, describe, test } from "node:test";
-import { TOOL_BROKER_ENV } from "../../src/broker/env-contract.ts";
+import { TOOL_BROKER_ENV, type WriterIdentity } from "../../src/broker/env-contract.ts";
 import { BWRAP_PATH } from "../../src/broker/sandbox-run.ts";
 import { BROKERED_DESCRIPTION_SUFFIX, BROKERED_TOOL_NAMES, installToolBroker } from "../../src/broker/tools.ts";
 import subagentDoneExtension from "../../src/tools/subagent-done.ts";
+import { fakePi, install, text, type Tool, type ToolInfo } from "../support/fake-tool-host.ts";
 import "../support/temp-root.ts";
 
 /**
@@ -26,62 +27,14 @@ import "../support/temp-root.ts";
  */
 const skip = existsSync(BWRAP_PATH) ? false : `${BWRAP_PATH} is not installed`;
 
-type ToolResult = { content: { type: string; text?: string }[] };
-type Tool = {
-	name: string;
-	description: string;
-	renderCall?: unknown;
-	execute: (
-		id: string,
-		params: Record<string, unknown>,
-		signal?: AbortSignal,
-		onUpdate?: unknown,
-		ctx?: unknown,
-	) => Promise<ToolResult>;
-};
 
-type ToolInfo = { name: string; description: string; sourceInfo: { path: string; source: string } };
+const brokered = (mode: "read-only") => ({ [TOOL_BROKER_ENV]: JSON.stringify({ version: 2, mode }) });
 
-function fakePi(activeTools: string[] = [], extraTools: ToolInfo[] = []) {
-	const tools = new Map<string, Tool>();
-	const handlers = new Map<string, ((...args: unknown[]) => unknown)[]>();
-	let active = [...activeTools];
-	const pi = {
-		registerTool(tool: Tool) {
-			tools.set(tool.name, tool);
-		},
-		on(event: string, handler: (...args: unknown[]) => unknown) {
-			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
-		},
-		getAllTools: (): ToolInfo[] => [
-			...[...tools.values()]
-				.filter((tool) => !extraTools.some((extra) => extra.name === tool.name))
-				.map((tool) => ({
-					name: tool.name,
-					description: tool.description,
-					sourceInfo: { path: "/ext/subagent-done.ts", source: "local" },
-				})),
-			...extraTools,
-		],
-		getActiveTools: () => [...active],
-		setActiveTools: (names: string[]) => {
-			active = [...names];
-		},
-	};
-	return { pi, tools, handlers, active: () => active };
-}
-
-function install(env: Record<string, string>) {
-	const fake = fakePi();
-	installToolBroker(fake.pi as never, env);
-	return fake;
-}
-
-function text(result: ToolResult): string {
-	return result.content.map((block) => block.text ?? "").join("\n");
-}
-
-const brokered = (mode: string) => ({ [TOOL_BROKER_ENV]: JSON.stringify({ version: 1, mode }) });
+/** A writer's config, pinned to `pinned` (a placeholder identity when only registration matters). */
+const brokeredWriter = (pinned: Omit<WriterIdentity, "launchId" | "generation"> = PLACEHOLDER) => ({
+	[TOOL_BROKER_ENV]: JSON.stringify({ version: 2, mode: "writer", identity: { ...pinned, launchId: "call-1", generation: 1 } }),
+});
+const PLACEHOLDER = { top: "/nowhere", commonDir: "/nowhere/.git", worktreeGitDir: "/nowhere/.git/worktrees/x", branch: "task" };
 
 describe("broker installation", () => {
 	test("an unmanaged child keeps Pi's own tools", () => {
@@ -89,15 +42,18 @@ describe("broker installation", () => {
 	});
 
 	test("a malformed broker config leaves every model tool failing closed", async () => {
-		const { tools } = install({ [TOOL_BROKER_ENV]: "{" });
-		assert.deepEqual([...tools.keys()].sort(), [...BROKERED_TOOL_NAMES].sort());
-		for (const tool of tools.values()) {
-			await assert.rejects(
-				tool.execute("call-1", { path: "README.md", command: "true", pattern: "x" }, undefined, undefined, {
-					cwd: process.cwd(),
-				}),
-				/tool broker/,
-			);
+		for (const value of ["{", '{"version":2,"mode":"writer"}', '{"version":1,"mode":"writer"}']) {
+			const { tools } = install({ [TOOL_BROKER_ENV]: value });
+			assert.deepEqual([...tools.keys()].sort(), [...BROKERED_TOOL_NAMES].sort());
+			for (const tool of tools.values()) {
+				await assert.rejects(
+					tool.execute("call-1", { path: "README.md", command: "true", pattern: "x" }, undefined, undefined, {
+						cwd: process.cwd(),
+					}),
+					/tool broker/,
+					value,
+				);
+			}
 		}
 	});
 
@@ -129,7 +85,7 @@ describe("broker installation", () => {
 	});
 
 	test("the brokered edit preview never reads files in the trusted process", () => {
-		const { tools } = install(brokered("writer"));
+		const { tools } = install(brokeredWriter());
 		assert.equal(tools.get("edit")?.renderCall, undefined);
 	});
 });
@@ -280,15 +236,5 @@ describe("brokered child tools", { skip }, () => {
 		assert.match(output, /^0$/m);
 		assert.match(output, /ok/);
 		assert.equal(existsSync(join(repo, "planted")), false);
-	});
-
-	test("a writer can write and edit its repository through the broker", async () => {
-		const { tools } = install(brokered("writer"));
-		await call(tools.get("write"), { path: "notes/new.txt", content: "first\n" });
-		assert.equal(readFileSync(join(repo, "notes", "new.txt"), "utf8"), "first\n");
-		await call(tools.get("edit"), { path: "notes/new.txt", edits: [{ oldText: "first", newText: "second" }] });
-		assert.equal(readFileSync(join(repo, "notes", "new.txt"), "utf8"), "second\n");
-		await assert.rejects(call(tools.get("write"), { path: secret, content: "x" }));
-		assert.equal(readFileSync(secret, "utf8"), '{"token":"brokered-canary"}');
 	});
 });

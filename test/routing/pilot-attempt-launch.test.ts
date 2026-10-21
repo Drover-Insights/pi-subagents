@@ -18,7 +18,7 @@ import type { SubagentToolRuntime } from "../../src/tools/subagent-tools.ts";
 import type { RunningSubagent, SubagentParamsInput, SubagentResult } from "../../src/types.ts";
 import "../support/env.ts";
 import { type PolicyDocument, canonicalPolicyDocument, writeCanonicalPolicy } from "../support/routing-policy.ts";
-import { writerRepo } from "../support/writer-repo.ts";
+import { pinnedOf, writerRepo } from "../support/writer-repo.ts";
 
 type ToolResult = { content: { type: string; text: string }[]; details: Record<string, unknown> };
 
@@ -461,9 +461,9 @@ describe("durable pilot attempts through the launch phase", () => {
 	test("no tool sandbox can be rooted in the store, and no sandboxed tool can write its records", async (t) => {
 		await harness().run([scout()]);
 		const caseDir = join(store(), sha256("scout-literal-1"));
-		for (const mode of ["read-only", "writer"] as const) {
-			assert.equal(buildSandboxPlan({ mode, cwd: caseDir, ...protectedBrokerPaths() }).status, "rejected", mode);
-		}
+		assert.equal(buildSandboxPlan({ mode: "read-only", cwd: caseDir, ...protectedBrokerPaths() }).status, "rejected");
+		const pinnedToStore = { top: caseDir, commonDir: caseDir, worktreeGitDir: caseDir, branch: "task" };
+		assert.notEqual(buildSandboxPlan({ mode: "writer", cwd: caseDir, identity: pinnedToStore, ...protectedBrokerPaths() }).status, "ready");
 		if (probeSandbox().status !== "available") {
 			t.skip("bubblewrap is not available on this host");
 			return;
@@ -480,8 +480,9 @@ describe("durable pilot attempts through the launch phase", () => {
 		const script = targets.map((target) => `if echo '{}' > ${JSON.stringify(target)}; then echo WROTE; fi`).join("; ");
 		for (const mode of ["read-only", "writer"] as const) {
 			const repo = writerRepo();
-			const plan = buildSandboxPlan({ mode, cwd: repo.linked, ...protectedBrokerPaths() });
-			assert.equal(plan.status, "ready", plan.status === "rejected" ? plan.message : "");
+			const identity = mode === "writer" ? { identity: pinnedOf(repo) } : {};
+			const plan = buildSandboxPlan({ mode, cwd: repo.linked, ...identity, ...protectedBrokerPaths() });
+			assert.equal(plan.status, "ready", plan.status !== "ready" ? plan.message : "");
 			if (plan.status !== "ready") return;
 
 			const result = await runInSandbox(plan.args, ["/usr/bin/bash", "-c", script], { timeoutMs: 20_000 });

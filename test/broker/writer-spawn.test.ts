@@ -9,6 +9,7 @@ import { classifyExecutionGroup, type ExecutionGroup, procReader } from "../../s
 import { acquireWriterLease, releaseWhenEmpty } from "../../src/broker/writer-lease.ts";
 import { probeWriterConfinement, spawnLeasedWriter, spawnWriterChild, WriterSpawnError } from "../../src/broker/writer-spawn.ts";
 import "../support/temp-root.ts";
+import { writerRepo } from "../support/writer-repo.ts";
 
 /**
  * Real-bubblewrap tests of the writer's execution group. Skipped only when
@@ -112,12 +113,15 @@ describe("writer execution group", { skip }, () => {
 	});
 
 	test("a setsid descendant and a running tool sandbox keep the writer's lease held until the init exits, even with its launcher killed", async (t) => {
-		const dir = scratch();
-		const pids = join(dir, "pids");
-		const leaseRoot = join(dir, "leases");
+		// A real linked worktree: the release inspects the leased tree.
+		const repo = writerRepo(scratch());
+		const dir = repo.linked;
+		const worktree = { top: dir, gitDir: repo.gitDir, commonDir: repo.common, branch: "task", head: repo.head };
+		const pids = join(repo.root, "pids");
+		const leaseRoot = join(repo.root, "leases");
 		mkdirSync(leaseRoot, { mode: 0o700 });
 		const acquired = acquireWriterLease(leaseRoot, {
-			worktree: { top: dir, gitDir: join(dir, ".wt"), commonDir: join(dir, ".git"), branch: "task", head: "a".repeat(40) },
+			worktree,
 			launchId: "call-1",
 			policyGeneration: "gen",
 		});
@@ -153,7 +157,7 @@ describe("writer execution group", { skip }, () => {
 		assert.equal(lease.releaseIfEmpty().status, "held");
 		assert.equal(pidAlive(descendantHostPid), true);
 		assert.ok(countMembers(recorded.pidNamespace) >= 3, "init, the setsid descendant, and the tool sandbox still run");
-		assert.equal(acquireWriterLease(leaseRoot, { worktree: { top: dir, gitDir: join(dir, ".wt"), commonDir: join(dir, ".git"), branch: "task", head: "a".repeat(40) }, launchId: "call-2", policyGeneration: "gen" }).status, "held");
+		assert.equal(acquireWriterLease(leaseRoot, { worktree, launchId: "call-2", policyGeneration: "gen" }).status, "held");
 
 		process.kill(recorded.initPid, "SIGKILL");
 		assert.deepEqual(await releaseWhenEmpty(lease, { intervalMs: 25 }), { status: "released" });

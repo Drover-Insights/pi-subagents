@@ -61,13 +61,20 @@ function fixture(): Fixture {
 }
 
 async function run(f: Fixture, mode: BrokerMode, script: string, options: { cwd?: string; timeoutMs?: number } = {}) {
+	const cwd = options.cwd ?? f.linked;
+	// A writer is pinned to the checkout it runs in.
+	const identity =
+		cwd === f.main
+			? { top: f.main, commonDir: f.common, worktreeGitDir: f.common, branch: "main" }
+			: { top: f.linked, commonDir: f.common, worktreeGitDir: join(f.common, "worktrees", "linked"), branch: "linked" };
 	const plan = buildSandboxPlan({
 		mode,
-		cwd: options.cwd ?? f.linked,
+		cwd,
 		protectedPaths: [f.home],
 		protectedAncestors: [homedir()],
+		...(mode === "writer" ? { identity } : {}),
 	});
-	assert.equal(plan.status, "ready", plan.status === "rejected" ? plan.message : "");
+	assert.equal(plan.status, "ready", plan.status !== "ready" ? plan.message : "");
 	if (plan.status !== "ready") throw new Error("unreachable");
 	const result = await runInSandbox(plan.args, ["/usr/bin/bash", "-c", script], { timeoutMs: options.timeoutMs ?? 20_000 });
 	return { ...result, out: result.stdout.toString(), err: result.stderr.toString() };

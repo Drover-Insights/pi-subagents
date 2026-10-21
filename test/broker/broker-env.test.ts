@@ -33,26 +33,62 @@ async function readLineEventually(path: string): Promise<string> {
 	throw new Error(`Timed out waiting for ${path}`);
 }
 
+const identity = {
+	top: "/work/linked",
+	commonDir: "/work/main/.git",
+	worktreeGitDir: "/work/main/.git/worktrees/linked",
+	branch: "task",
+	launchId: "call-1",
+	generation: 1,
+};
+
 describe("tool broker env contract", () => {
 	it("tells a managed child its broker mode and clears the variable for every other child", () => {
-		assert.deepEqual(toolBrokerEnv(managed), { [TOOL_BROKER_ENV]: '{"version":1,"mode":"read-only"}' });
+		assert.deepEqual(toolBrokerEnv(managed), { [TOOL_BROKER_ENV]: '{"version":2,"mode":"read-only"}' });
 		assert.deepEqual(toolBrokerEnv(undefined), { [TOOL_BROKER_ENV]: "" });
+	});
+
+	it("pins a writer's worktree identity, and refuses a writer without one", () => {
+		const writer = { ...managed, toolBroker: { mode: "writer" as const } };
+		assert.deepEqual(JSON.parse(toolBrokerEnv(writer, identity)[TOOL_BROKER_ENV] as string), {
+			version: 2,
+			mode: "writer",
+			identity,
+		});
+		assert.throws(() => toolBrokerEnv(writer), /pinned worktree identity/);
+		assert.throws(() => toolBrokerEnv(managed, identity), /read-only/);
 	});
 
 	it("reads only an exact, known config and reports anything else as malformed", () => {
 		assert.deepEqual(readToolBrokerConfig({}), { status: "absent" });
 		assert.deepEqual(readToolBrokerConfig({ [TOOL_BROKER_ENV]: "" }), { status: "absent" });
-		assert.deepEqual(readToolBrokerConfig({ [TOOL_BROKER_ENV]: '{"version":1,"mode":"writer"}' }), {
+		assert.deepEqual(readToolBrokerConfig({ [TOOL_BROKER_ENV]: '{"version":2,"mode":"read-only"}' }), {
 			status: "brokered",
-			mode: "writer",
+			mode: "read-only",
 		});
+		assert.deepEqual(
+			readToolBrokerConfig({ [TOOL_BROKER_ENV]: JSON.stringify({ version: 2, mode: "writer", identity }) }),
+			{ status: "brokered", mode: "writer", identity },
+		);
+		const { generation: _generation, ...missing } = identity;
 		for (const value of [
 			"read-only",
 			"{",
+			'{"version":1,"mode":"writer"}',
+			'{"version":1,"mode":"read-only"}',
 			'{"version":2,"mode":"writer"}',
-			'{"version":1,"mode":"root"}',
-			'{"version":1}',
-			'{"version":1,"mode":"writer","network":true}',
+			'{"version":2,"mode":"root"}',
+			'{"version":2}',
+			'{"version":2,"mode":"read-only","network":true}',
+			JSON.stringify({ version: 2, mode: "read-only", identity }),
+			JSON.stringify({ version: 2, mode: "writer", identity: missing }),
+			JSON.stringify({ version: 2, mode: "writer", identity: { ...identity, extra: "x" } }),
+			JSON.stringify({ version: 2, mode: "writer", identity: { ...identity, top: "relative" } }),
+			JSON.stringify({ version: 2, mode: "writer", identity: { ...identity, branch: "" } }),
+			JSON.stringify({ version: 2, mode: "writer", identity: { ...identity, launchId: 7 } }),
+			JSON.stringify({ version: 2, mode: "writer", identity: { ...identity, generation: 0 } }),
+			JSON.stringify({ version: 2, mode: "writer", identity: { ...identity, generation: 1.5 } }),
+			JSON.stringify({ version: 2, mode: "writer", identity: null }),
 			"null",
 			"[]",
 		]) {
@@ -77,7 +113,7 @@ describe("tool broker env contract", () => {
 		try {
 			assert.equal(
 				getBaseSubagentEnvVars(prepared(managed), params, () => "standalone")[TOOL_BROKER_ENV],
-				'{"version":1,"mode":"read-only"}',
+				'{"version":2,"mode":"read-only"}',
 			);
 			assert.equal(getBaseSubagentEnvVars(prepared(), params, () => "standalone")[TOOL_BROKER_ENV], "");
 		} finally {

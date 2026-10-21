@@ -2,7 +2,9 @@
  * Installs the credential-blind tool broker in a policy-managed child. Every
  * model-directed built-in tool is overridden by Pi's own definition with
  * operations that run in a bubblewrap sandbox, never in the child process.
- * A malformed broker config disables the tools instead of falling back.
+ * A malformed broker config disables the tools instead of falling back. A
+ * writer that is contained keeps every tool disabled for the rest of its
+ * session and asks Pi to exit.
  */
 import {
 	createBashToolDefinition,
@@ -17,7 +19,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { readToolBrokerConfig } from "./env-contract.ts";
 import { createBrokeredGrepDefinition } from "./grep-tool.ts";
-import type { BrokerMode } from "./sandbox-plan.ts";
+import { WriterContainment } from "./writer-containment.ts";
 import {
 	type BrokerScope,
 	bashOperations,
@@ -52,7 +54,7 @@ const BASE_DEFINITIONS: Record<string, (cwd: string) => AnyToolDefinition> = {
  * their sandbox for the tool call's working directory, so the definition is
  * built per call for `ctx.cwd`.
  */
-function perCallDefinition(mode: BrokerMode, name: string): (cwd: string, scope: BrokerScope) => AnyToolDefinition {
+function perCallDefinition(name: string): (cwd: string, scope: BrokerScope) => AnyToolDefinition {
 	switch (name) {
 		case "read":
 			return (cwd, scope) => createReadToolDefinition(cwd, { operations: readOperations(scope, cwd) });
@@ -68,23 +70,57 @@ function perCallDefinition(mode: BrokerMode, name: string): (cwd: string, scope:
 			return (cwd, scope) =>
 				createBashToolDefinition(cwd, { operations: bashOperations(scope), exposeSessionEnvironment: false });
 		default:
-			return () => createBrokeredGrepDefinition(mode);
+			return (_cwd, scope) => createBrokeredGrepDefinition(scope);
 	}
 }
 
-function brokeredTool(mode: BrokerMode, name: string): AnyToolDefinition {
-	const build = perCallDefinition(mode, name);
-	const base = build(process.cwd(), { mode });
+/** Ask Pi to exit once the current call has failed; a stale context is ignored. */
+function requestExit(ctx: { shutdown?: () => void } | undefined): void {
+	setTimeout(() => {
+		try {
+			ctx?.shutdown?.();
+		} catch {
+			// The session may already be shutting down.
+		}
+	}, 0);
+}
+
+/**
+ * Fail every call of a contained writer with the containment reason, and ask
+ * Pi to exit. An operation may wrap a sandbox's error in its own, so the
+ * latch, not the error, decides.
+ */
+function guarded(execute: Execute, containment: WriterContainment | undefined): Execute {
+	if (!containment) return execute;
+	return async (toolCallId, params, signal, onUpdate, ctx) => {
+		try {
+			containment.assertOpen();
+			const result = await execute(toolCallId, params, signal, onUpdate, ctx);
+			containment.assertOpen();
+			return result;
+		} catch (error) {
+			if (!containment.contained) throw error;
+			requestExit(ctx);
+			throw containment.error();
+		}
+	};
+}
+
+function brokeredTool(name: string, containment: WriterContainment | undefined): AnyToolDefinition {
+	const build = perCallDefinition(name);
+	const scopeFor = (signal?: AbortSignal): BrokerScope => {
+		const cancel = signal ? { signal } : {};
+		return containment ? { mode: "writer", containment, ...cancel } : { mode: "read-only", ...cancel };
+	};
+	const base = build(process.cwd(), scopeFor());
 	// The call's abort signal reaches every sandbox the operations start.
 	const execute: Execute = (toolCallId, params, signal, onUpdate, ctx) =>
-		build(ctx?.cwd || process.cwd(), { mode, ...(signal ? { signal } : {}) }).execute(
-			toolCallId,
-			params,
-			signal,
-			onUpdate,
-			ctx,
-		);
-	const tool: AnyToolDefinition = { ...base, description: base.description + BROKERED_DESCRIPTION_SUFFIX, execute };
+		build(ctx?.cwd || process.cwd(), scopeFor(signal)).execute(toolCallId, params, signal, onUpdate, ctx);
+	const tool: AnyToolDefinition = {
+		...base,
+		description: base.description + BROKERED_DESCRIPTION_SUFFIX,
+		execute: guarded(execute, containment),
+	};
 	// Pi's edit preview reads the target file in this process; the default rendering reads nothing.
 	if (name === "edit") delete tool.renderCall;
 	return tool;
@@ -123,8 +159,11 @@ function deactivateUnbrokered(pi: ExtensionAPI): void {
 export function installToolBroker(pi: ExtensionAPI, env: Record<string, string | undefined> = process.env): void {
 	const config = readToolBrokerConfig(env);
 	if (config.status === "absent") return;
+	// One containment for the whole session: once contained, every tool stays disabled.
+	const containment =
+		config.status === "brokered" && config.mode === "writer" ? new WriterContainment(config.identity) : undefined;
 	for (const name of BROKERED_TOOL_NAMES) {
-		pi.registerTool(config.status === "malformed" ? disabledTool(name) : brokeredTool(config.mode, name));
+		pi.registerTool(config.status === "malformed" ? disabledTool(name) : brokeredTool(name, containment));
 	}
 	const guard = () => {
 		deactivateUnbrokered(pi);

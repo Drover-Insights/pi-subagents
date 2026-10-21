@@ -153,11 +153,7 @@ export function authorizeSubagentLaunches(
 		if (authorization.status === "authorized") {
 			const verification = verifyPolicyLaunch(authorization.launch, agentDir);
 			if (verification.status === "rejected") return policyRejection(verification.reason, verification.message);
-			const brokerFailure = checkToolBroker(
-				getChildCwd(child, options.cwd),
-				authorization.launch.toolBroker.mode,
-				options.probeSandbox,
-			);
+			const brokerFailure = checkToolBroker(getChildCwd(child, options.cwd), options.probeSandbox);
 			if (brokerFailure !== null) {
 				return policyRejection(
 					"tool_broker_unavailable",
