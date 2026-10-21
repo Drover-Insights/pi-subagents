@@ -25,7 +25,7 @@
 		{
 			"id": "package-conformance-report",
 			"path": "docs/conformance/package-conformance-report.md",
-			"sha256": "374246cfb4e3ba95513c24dcccc61aedb42cedd0d005545b3575b077a0b3b058"
+			"sha256": "9ed85d954678675798a9c623889a8889803683a4f4ea4f675fcd6be09510cb91"
 		},
 		{
 			"id": "extension-allowlist",
@@ -55,6 +55,6 @@
 	],
 	"test": {
 		"command": "npx tsc --noEmit && npm test",
-		"result": "pending"
+		"result": "passed"
 	}
 }

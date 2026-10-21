@@ -15,7 +15,7 @@ The report is release evidence. It is not a runtime policy input and changes no 
 | Conformance input | `managed-generation-conformance.json` at the checkout root |
 | Report `package.commit` | `HEAD`: the clean checkout commit pi-config's stager validates and pins |
 
-Validated commit: `pending`
+Validated commit: `e8100778dcfb92dc712c1649153167d28e6f18c3`
 
 The validated commit is the exact clean fork commit on which the test command below was run. The report commit follows it and changes only the conformance artifacts. While the validated commit reads `pending`, this report covers no commit, and the conformance input's `test.result` is `pending`, which pi-config's stager refuses. A commit is covered by this report only when this binding check exits 0 in a clean checkout of it, with `<validated>` replaced by the commit above:
 
@@ -63,9 +63,19 @@ npx tsc --noEmit && npm test
 
 It is the repository's validation gate (`AGENTS.md`), with `npx` in place of `bunx` because the validation host has no Bun; both run the `typescript` devDependency.
 
-Results: pending
+Results: tests 1588, pass 1582, fail 0, cancelled 0, skipped 6, todo 0; tsc clean
 
-The recorded result covers only the tests that ran. Some cited suites skip on a host without bubblewrap (`/usr/bin/bwrap`) or Python, and `node --test` still exits 0, so the run lists every skipped test below; a result in which any cited test was skipped does not support that test's claim.
+Run details:
+
+- Run on the validated commit's tree, `9223e099bac5bfe3fa0bd47fd8ea15f938485dae`, on 2026-10-21, exit status 0.
+- Node `v24.21.0`, npm `11.19.0`, TypeScript `6.0.3`, on Linux with `/usr/bin/bwrap` and `python3` present.
+- Dependencies: the host has no Bun, so they were installed with `npm install --no-package-lock --no-save --ignore-scripts`, then the direct `@earendil-works/pi-coding-agent`, `pi-ai`, `pi-tui` and `pi-server` packages were pinned to `0.85.0` as in `bun.lock`. `pi-coding-agent`'s own nested `@earendil-works` dependencies stayed at `0.85.0`; the hoisted copies other packages use (`chord`, `pi-agent-core`, `pi-protocol`, `pi-telemetry`) resolved to `0.85.1`, within their declared ranges.
+- The six skipped tests, none of them cited in this report:
+  - `test/vf/capability-gate.test.ts`: the live DeepSeek backend probe, which needs a live provider.
+  - `test/broker/brokered-tools.test.ts`: the ripgrep-or-fd-unavailable check, which skips when ripgrep is installed.
+  - `test/mux/mux.test.ts`: four tmux integration tests, which skip outside a tmux session.
+
+The recorded result covers only the tests that ran. Some cited suites skip on a host without bubblewrap (`/usr/bin/bwrap`) or Python, and `node --test` still exits 0, so the run details above list every skipped test; a result in which any cited test was skipped does not support that test's claim.
 
 ## Evidence classes
 
