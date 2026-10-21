@@ -1,0 +1,60 @@
+{
+	"schemaVersion": 1,
+	"package": {
+		"repository": "git:github.com/Drover-Insights/pi-subagents",
+		"commit": "HEAD"
+	},
+	"supportedPolicySchema": {
+		"minimum": 3,
+		"maximum": 3
+	},
+	"extensionLoading": {
+		"autoload": true,
+		"resources": [
+			{
+				"path": "package.json",
+				"sha256": "0fc4eac94bc318ab5aedc3b0dd80ecaea2c50134611ba02210a3ad7457c5ab88"
+			},
+			{
+				"path": "src/index.ts",
+				"sha256": "7ced5d00f2609264cb1c838d6c04e0362217610490c01c2bae980b099b7e7ea1"
+			}
+		]
+	},
+	"evidence": [
+		{
+			"id": "package-conformance-report",
+			"path": "docs/conformance/package-conformance-report.md",
+			"sha256": "374246cfb4e3ba95513c24dcccc61aedb42cedd0d005545b3575b077a0b3b058"
+		},
+		{
+			"id": "extension-allowlist",
+			"path": "docs/conformance/extension-allowlist.md",
+			"sha256": "f2019ac48f0c3e6e473c8460f2a4b22ab3c82bacac85bbdd19ad0d259cd6c7d1"
+		},
+		{
+			"id": "writer-confinement",
+			"path": "docs/conformance/writer-confinement.md",
+			"sha256": "8e7ee9c02f59b8fa939688e9a33ca28d5cf7f3d67abc70da6684273f40acf8cc"
+		},
+		{
+			"id": "resume-narrowing",
+			"path": "docs/conformance/resume-narrowing.md",
+			"sha256": "657ba6ec606ac8d007b8a7d1a174e612ad5141d0899a7d79c27273e7b2fb3deb"
+		},
+		{
+			"id": "tool-broker",
+			"path": "docs/conformance/tool-broker.md",
+			"sha256": "082555ca615dfe7aa759ff325bb85655edd7f7d575d110b518905e52165a232d"
+		},
+		{
+			"id": "pilot-attempts",
+			"path": "docs/conformance/pilot-attempts.md",
+			"sha256": "32e268fa59ba10d171fbc7779217c889f72eaa12ce1b5465b8aef31868287fdf"
+		}
+	],
+	"test": {
+		"command": "npx tsc --noEmit && npm test",
+		"result": "pending"
+	}
+}

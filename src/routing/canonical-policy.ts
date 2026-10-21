@@ -77,9 +77,11 @@ export type CanonicalPolicyState =
 
 const CANONICAL_POLICY_FILE = "drover-model-routing.json";
 
-/** Schema versions this package can enforce as the child runtime. */
-const CHILD_RUNTIME_SCHEMA_MINIMUM = 3;
-const CHILD_RUNTIME_SCHEMA_MAXIMUM = 3;
+/**
+ * Schema versions this package can enforce as the child runtime. The
+ * managed-generation conformance report declares exactly this range.
+ */
+export const CHILD_RUNTIME_SCHEMA_RANGE = Object.freeze({ minimum: 3, maximum: 3 });
 
 const IDENTIFIER = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const ROUTE_COMPONENT = /^[a-z0-9][a-z0-9.-]*$/;
@@ -231,14 +233,14 @@ function parseSchemaCompatibility(policy: Record<string, unknown>): void {
 		}
 	}
 	const child = compatibility.childRuntime as { minimum: number; maximum: number };
-	if (child.minimum > CHILD_RUNTIME_SCHEMA_MAXIMUM || child.maximum < CHILD_RUNTIME_SCHEMA_MINIMUM) {
+	if (child.minimum > CHILD_RUNTIME_SCHEMA_RANGE.maximum || child.maximum < CHILD_RUNTIME_SCHEMA_RANGE.minimum) {
 		throw new Error(
 			`schemaCompatibility.childRuntime ${child.minimum}..${child.maximum} does not admit this package's ` +
-				`supported range ${CHILD_RUNTIME_SCHEMA_MINIMUM}..${CHILD_RUNTIME_SCHEMA_MAXIMUM}.`,
+				`supported range ${CHILD_RUNTIME_SCHEMA_RANGE.minimum}..${CHILD_RUNTIME_SCHEMA_RANGE.maximum}.`,
 		);
 	}
-	const minimum = Math.max(child.minimum, CHILD_RUNTIME_SCHEMA_MINIMUM);
-	const maximum = Math.min(child.maximum, CHILD_RUNTIME_SCHEMA_MAXIMUM);
+	const minimum = Math.max(child.minimum, CHILD_RUNTIME_SCHEMA_RANGE.minimum);
+	const maximum = Math.min(child.maximum, CHILD_RUNTIME_SCHEMA_RANGE.maximum);
 	if (
 		!Number.isInteger(policy.schemaVersion) ||
 		(policy.schemaVersion as number) < minimum ||
