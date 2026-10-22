@@ -16,21 +16,19 @@
  * writer-created Git metadata. Any failure writes `lease-<n>.contained.json`
  * instead, which no proof or reclaim clears; only an operator's
  * `lease-<n>.cleared.json` lets a proven-empty contained lease end.
+ *
+ * Parents from before the containment record never read it, but refuse to
+ * reclaim a lease whose `lease-<n>.spawn-unproven.json` exists. So a
+ * containment first links an unproven-spawn marker flagged `containment`,
+ * which holds the lease for them and alone already counts as containment
+ * here, then writes the containment record. Only that flagged marker is
+ * waived by a proof; a genuine unproven spawn found the name taken records
+ * itself as `lease-<n>.spawn-unproven-late.json`, which always blocks.
  */
-import { createHash, randomBytes } from "node:crypto";
-import {
-	closeSync,
-	fsyncSync,
-	linkSync,
-	lstatSync,
-	mkdirSync,
-	openSync,
-	readdirSync,
-	readFileSync,
-	unlinkSync,
-	writeSync,
-} from "node:fs";
+import { createHash } from "node:crypto";
+import { readdirSync } from "node:fs";
 import { join } from "node:path";
+import { createMarker, exists, linkRecord, privateDirectory, readJson } from "./lease-records.ts";
 import {
 	classifyExecutionGroup,
 	classifySupervisor,
@@ -87,102 +85,58 @@ export type LeaseAcquisition =
 	| { status: "held"; reason: string }
 	| { status: "unavailable"; reason: string };
 
-class StoreError extends Error {}
 
 const LEASE_FILE = /^lease-(\d+)\.json$/;
 
-function errorCode(error: unknown): string | undefined {
-	return (error as { code?: string } | null)?.code;
-}
 
-/** A directory this user alone can use; created when missing, never followed through a symlink. */
-function privateDirectory(path: string): void {
-	try {
-		mkdirSync(path, { mode: 0o700 });
-	} catch (error) {
-		if (errorCode(error) !== "EEXIST") throw new StoreError(`cannot create ${path}: ${errorCode(error) ?? error}`);
-	}
-	const stat = lstatSync(path);
-	if (stat.isSymbolicLink() || !stat.isDirectory()) throw new StoreError(`${path} is not a directory`);
-	if ((stat.mode & 0o077) !== 0) throw new StoreError(`${path} is accessible to other users`);
-	if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
-		throw new StoreError(`${path} is owned by another user`);
-	}
-}
+type UnprovenSpawnMarker = { reason: string; containment?: string; at: string };
 
-function fsyncDirectory(path: string): void {
-	const fd = openSync(path, "r");
+/** The containment reason of lease `number`'s unproven-spawn marker when containment linked it, else undefined. */
+function containmentSpawnMarker(dir: string, number: number): string | undefined {
 	try {
-		fsyncSync(fd);
-	} finally {
-		closeSync(fd);
-	}
-}
-
-/** Write a fully synced temporary file, then link it into place; `EEXIST` means the name is taken. */
-function linkRecord(dir: string, name: string, value: unknown): "linked" | "exists" {
-	const temp = join(dir, "tmp", `${process.pid}-${randomBytes(8).toString("hex")}.json`);
-	const fd = openSync(temp, "wx", 0o600);
-	try {
-		writeSync(fd, `${JSON.stringify(value, null, "\t")}\n`);
-		fsyncSync(fd);
-	} finally {
-		closeSync(fd);
-	}
-	try {
-		linkSync(temp, join(dir, name));
-	} catch (error) {
-		if (errorCode(error) === "EEXIST") return "exists";
-		throw error;
-	} finally {
-		// The temporary name only; the linked record stays.
-		unlinkSync(temp);
-	}
-	fsyncDirectory(dir);
-	return "linked";
-}
-
-/** Create a marker with `O_EXCL`; false when it already exists. */
-function createMarker(dir: string, name: string, value: unknown): boolean {
-	let fd: number;
-	try {
-		fd = openSync(join(dir, name), "wx", 0o600);
-	} catch (error) {
-		if (errorCode(error) === "EEXIST") return false;
-		throw error;
-	}
-	try {
-		writeSync(fd, `${JSON.stringify(value, null, "\t")}\n`);
-		fsyncSync(fd);
-	} finally {
-		closeSync(fd);
-	}
-	fsyncDirectory(dir);
-	return true;
-}
-
-function exists(path: string): boolean {
-	try {
-		lstatSync(path);
-		return true;
+		const { containment } = readJson<Partial<UnprovenSpawnMarker>>(join(dir, `lease-${number}.spawn-unproven.json`));
+		return typeof containment === "string" ? containment : undefined;
 	} catch {
-		return false;
+		return undefined;
 	}
-}
-
-function readJson<T>(path: string): T {
-	return JSON.parse(readFileSync(path, "utf8")) as T;
 }
 
 /** Why lease `number` is contained, or undefined. The marker's existence decides; a crash can leave it empty. */
 function containedReason(dir: string, number: number): string | undefined {
 	const marker = join(dir, `lease-${number}.contained.json`);
-	if (!exists(marker)) return undefined;
+	if (!exists(marker)) return containmentSpawnMarker(dir, number);
 	try {
 		return readJson<{ reason: string }>(marker).reason;
 	} catch {
 		return "its containment marker is unreadable";
 	}
+}
+
+/** Link the unproven-spawn marker that holds a contained lease for parents that never read the containment record; an existing marker is kept. */
+function linkContainmentSpawnMarker(dir: string, number: number, reason: string): void {
+	const marker: UnprovenSpawnMarker = {
+		reason: `the writer lease is contained: ${reason}`,
+		containment: reason,
+		at: new Date().toISOString(),
+	};
+	try {
+		linkRecord(dir, `lease-${number}.spawn-unproven.json`, marker);
+	} catch {
+		// Written in place instead; a crash that leaves it empty reads as a genuine unproven spawn, which still holds.
+		createMarker(dir, `lease-${number}.spawn-unproven.json`, marker);
+	}
+}
+
+/** Contain lease `number` on disk: the unproven-spawn marker first, then the containment record. */
+function writeContainment(dir: string, number: number, reason: string): void {
+	let failure: unknown;
+	try {
+		linkContainmentSpawnMarker(dir, number, reason);
+	} catch (error) {
+		failure = error;
+	}
+	createMarker(dir, `lease-${number}.contained.json`, { reason, at: new Date().toISOString() });
+	if (failure !== undefined) throw failure;
 }
 
 function heldContained(number: number, reason: string): string {
@@ -218,15 +172,16 @@ function proveGroupsEmpty(
 	return { proven: true, evidence };
 }
 
-/** Whether lease `number` is proven empty: no unproven spawn, and every recorded group proven gone. */
+/** Whether lease `number` is proven empty: no unproven spawn, and every recorded group proven gone. Containment's marker is no unproven spawn. */
 function proveLeaseEmpty(
 	dir: string,
 	number: number,
 	supervisorPidNamespace: string,
 	reader: ProcReader,
 ): ReturnType<typeof proveGroupsEmpty> {
-	const unproven = join(dir, `lease-${number}.spawn-unproven.json`);
-	if (exists(unproven)) {
+	const late = join(dir, `lease-${number}.spawn-unproven-late.json`);
+	const unproven = exists(late) ? late : join(dir, `lease-${number}.spawn-unproven.json`);
+	if (exists(unproven) && (unproven === late || containmentSpawnMarker(dir, number) === undefined)) {
 		// The marker's existence decides; its reason is read best-effort, since a crash can leave it empty.
 		let reason = "a spawn of this lease could not be proven gone";
 		try {
@@ -300,7 +255,11 @@ export class WriterLease {
 		// release in this process. If this process then dies too, nothing records
 		// the unproven spawn and a later launch may reclaim the lease.
 		this.unprovenSpawn = reason;
-		createMarker(this.dir, `${this.name}.spawn-unproven.json`, { reason, at: new Date().toISOString() });
+		const marker = { reason, at: new Date().toISOString() };
+		if (!createMarker(this.dir, `${this.name}.spawn-unproven.json`, marker)) {
+			// The name may hold containment's marker, which a proof waives.
+			createMarker(this.dir, `${this.name}.spawn-unproven-late.json`, marker);
+		}
 	}
 
 	/** Why this lease is contained, from this process or from disk, or undefined. Throws when the store is unreadable. */
@@ -328,7 +287,7 @@ export class WriterLease {
 	markContained(reason: string): void {
 		this.containedInMemory ??= reason;
 		try {
-			createMarker(this.dir, `${this.name}.contained.json`, { reason, at: new Date().toISOString() });
+			writeContainment(this.dir, this.number, reason);
 		} catch {
 			// Held in memory; if this process dies too, a reclaim inspects the tree again.
 		}
@@ -489,6 +448,27 @@ function latestLease(dir: string): number {
 }
 
 /**
+ * Give a lease an earlier version contained the marker that holds it for older
+ * parents. Only once its supervisor is dead: a live one may still record a
+ * genuine unproven spawn under that name. Best-effort; the lease is held anyway.
+ */
+function backfillContainmentSpawnMarker(
+	dir: string,
+	number: number,
+	record: LeaseRecord,
+	reason: string,
+	reader: ProcReader,
+): void {
+	try {
+		if (exists(join(dir, `lease-${number}.spawn-unproven.json`))) return;
+		if (classifySupervisor({ ...record.supervisor, bootId: record.bootId }, reader).state !== "dead") return;
+		linkContainmentSpawnMarker(dir, number, reason);
+	} catch {
+		// The next launch into the worktree tries again.
+	}
+}
+
+/**
  * Reclaim lease `number` when its supervisor is dead, its groups are proven
  * empty, and its worktree passes inspection; otherwise why not. A contained
  * lease is reclaimed only once an operator cleared it and its groups are
@@ -499,7 +479,10 @@ function tryReclaim(dir: string, number: number, reader: ProcReader): string | n
 	const held = `the worktree's writer lease is held by launch ${record.launchId} (supervisor ${record.supervisor.pid})`;
 	const contained = containedReason(dir, number);
 	if (contained !== undefined) {
-		if (!exists(join(dir, `lease-${number}.cleared.json`))) return `${held}; ${heldContained(number, contained)}`;
+		if (!exists(join(dir, `lease-${number}.cleared.json`))) {
+			backfillContainmentSpawnMarker(dir, number, record, contained, reader);
+			return `${held}; ${heldContained(number, contained)}`;
+		}
 		const cleared = proveLeaseEmpty(dir, number, record.supervisor.pidNamespace, reader);
 		if (!cleared.proven) return `${held}; it is cleared but ${cleared.reason}`;
 		createMarker(dir, `lease-${number}.end.json`, { kind: "cleared", evidence: cleared.evidence, at: new Date().toISOString() });
@@ -514,7 +497,12 @@ function tryReclaim(dir: string, number: number, reader: ProcReader): string | n
 	const pinned = { top: record.worktree, commonDir: record.repository, worktreeGitDir: record.gitDir, branch: record.branch };
 	const breach = inspectWriterTree(pinned, record.launchId, true);
 	if (breach !== null) {
-		createMarker(dir, `lease-${number}.contained.json`, { reason: breach, at: new Date().toISOString() });
+		try {
+			writeContainment(dir, number, breach);
+		} catch (error) {
+			// Contained on disk all the same; a later launch adds the missing marker.
+			if (containedReason(dir, number) === undefined) throw error;
+		}
 		return `${held}; ${heldContained(number, breach)}`;
 	}
 	createMarker(dir, `lease-${number}.end.json`, {

@@ -72,6 +72,7 @@ import "./broker/writer-worktree.test.ts";
 import "./broker/writer-group.test.ts";
 import "./broker/writer-lease.test.ts";
 import "./broker/writer-lease-containment.test.ts";
+import "./broker/writer-lease-cross-version.test.ts";
 import "./broker/writer-spawn.test.ts";
 import "./broker/writer-escape.test.ts";
 import "./broker/writer-seal.test.ts";
