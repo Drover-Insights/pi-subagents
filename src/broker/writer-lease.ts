@@ -141,8 +141,8 @@ function writeContainment(dir: string, number: number, reason: string): void {
 	if (failure !== undefined) throw failure;
 }
 
-function heldContained(number: number, reason: string): string {
-	return `the writer lease is contained: ${reason}; an operator must inspect the worktree and create lease-${number}.cleared.json to clear it`;
+function heldContained(dir: string, number: number, reason: string): string {
+	return `the writer lease is contained: ${reason}; an operator must inspect the worktree and create ${join(dir, `lease-${number}.cleared.json`)} to clear it`;
 }
 
 function groupRecords(dir: string, number: number): GroupRecord[] {
@@ -326,11 +326,11 @@ export class WriterLease {
 		}
 		// A contained lease ends only through an operator's clear, which the next acquire honors.
 		const contained = this.containedReason();
-		if (contained !== undefined) return { status: "held", reason: heldContained(this.number, contained) };
+		if (contained !== undefined) return { status: "held", reason: heldContained(this.dir, this.number, contained) };
 		const breach = inspectWriterTree(this.pinned, this.containmentKey, true);
 		if (breach !== null) {
 			this.markContained(breach);
-			return { status: "held", reason: heldContained(this.number, breach) };
+			return { status: "held", reason: heldContained(this.dir, this.number, breach) };
 		}
 		this.end({ kind: "released", evidence: proof.evidence });
 		return { status: "released" };
@@ -384,7 +384,7 @@ export async function releaseWhenEmpty(lease: WriterLease, options: ReleaseWaitO
 	while (true) {
 		// A contained lease waits for an operator, not for proof.
 		const contained = containedNow(lease);
-		if (contained !== undefined) return { status: "held", reason: heldContained(lease.number, contained) };
+		if (contained !== undefined) return { status: "held", reason: heldContained(lease.dir, lease.number, contained) };
 		const proof = lease.proveEmpty(options.reader);
 		if (proof.proven) {
 			try {
@@ -508,7 +508,7 @@ function tryReclaim(dir: string, number: number, reader: ProcReader): string | n
 	if (contained !== undefined) {
 		if (!exists(join(dir, `lease-${number}.cleared.json`))) {
 			backfillContainmentSpawnMarker(dir, number, record, contained, reader);
-			return `${held}; ${heldContained(number, contained)}`;
+			return `${held}; ${heldContained(dir, number, contained)}`;
 		}
 		const cleared = proveLeaseEmpty(dir, number, record.supervisor.pidNamespace, reader);
 		if (!cleared.proven) return `${held}; it is cleared but ${cleared.reason}`;
@@ -531,7 +531,7 @@ function tryReclaim(dir: string, number: number, reader: ProcReader): string | n
 			// Contained on disk all the same; a later launch adds the missing marker.
 			if (containedReason(dir, number) === undefined) throw error;
 		}
-		return `${held}; ${heldContained(number, breach)}`;
+		return `${held}; ${heldContained(dir, number, breach)}`;
 	}
 	createMarker(dir, `lease-${number}.end.json`, {
 		kind: "reclaimed",

@@ -91,6 +91,22 @@ describe("a contained writer lease", () => {
 		assert.ok(!files(root).includes("lease-2.json"));
 	});
 
+	test("after a parent crash, a reclaim that finds the branch switched stays contained and names the full cleared-marker path", () => {
+		const root = storeRoot();
+		acquired(root, running).recordGroup(group, 1);
+		writeFileSync(join(LEASED.gitDir, "HEAD"), "ref: refs/heads/other\n");
+		const marker = join(keyDir(root), "lease-1.cleared.json");
+
+		for (const call of ["call-2", "call-3"]) {
+			const later = acquireWriterLease(root, request(call), { reader: parentCrashed, supervisor });
+			assert.equal(later.status, "held", call);
+			const reason = later.status === "held" ? later.reason : "";
+			assert.match(reason, /contained.*branch other/, call);
+			assert.ok(reason.includes(`create ${marker} to clear it`), `${call}: ${reason}`);
+		}
+		assert.ok(!files(root).includes("lease-2.json"));
+	});
+
 	test("an operator's clear ends a contained lease only once its group is proven empty", () => {
 		const root = storeRoot();
 		const lease = acquired(root, running);
