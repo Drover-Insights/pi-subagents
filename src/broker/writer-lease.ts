@@ -28,7 +28,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
-import { createMarker, exists, linkRecord, privateDirectory, readJson } from "./lease-records.ts";
+import { createMarker, linkRecord, privateDirectory } from "../write-once-records.ts";
+import { exists, readJson } from "./lease-records.ts";
 import {
 	classifyExecutionGroup,
 	classifySupervisor,

@@ -27,7 +27,7 @@ import {
 	privateDirectory,
 	sha256,
 	tryReadJson,
-} from "./write-once-records.ts";
+} from "../write-once-records.ts";
 
 export const RESUME_SNAPSHOT_VERSION = 1;
 

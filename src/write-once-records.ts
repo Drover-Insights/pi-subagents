@@ -1,8 +1,10 @@
 /**
  * The write-once record primitives the trusted state stores under the agent
- * directory share: private directories this user alone can use, never
- * followed through a symlink, and records linked into place fully written and
- * fsynced, so a name is taken exactly once and nothing is ever rewritten.
+ * directory share (the routing pilot and resume stores, the broker's writer
+ * leases): private directories this user alone can use, never followed
+ * through a symlink, records linked into place fully written and fsynced, and
+ * markers created with `O_EXCL`, so a name is taken exactly once and nothing
+ * is ever rewritten.
  */
 import { createHash, randomBytes } from "node:crypto";
 import {
@@ -94,6 +96,25 @@ export function linkRecord(dir: string, name: string, value: unknown): "linked" 
 	}
 	fsyncDirectory(dir);
 	return "linked";
+}
+
+/** Create a fully synced marker with `O_EXCL`; false when the name is already taken. */
+export function createMarker(dir: string, name: string, value: unknown): boolean {
+	let fd: number;
+	try {
+		fd = openSync(join(dir, name), "wx", 0o600);
+	} catch (error) {
+		if (errorCode(error) === "EEXIST") return false;
+		throw error;
+	}
+	try {
+		writeSync(fd, `${JSON.stringify(value, null, "\t")}\n`);
+		fsyncSync(fd);
+	} finally {
+		closeSync(fd);
+	}
+	fsyncDirectory(dir);
+	return true;
 }
 
 /** The parsed JSON at `path`: `undefined` when missing, `null` when unreadable or unparseable. */

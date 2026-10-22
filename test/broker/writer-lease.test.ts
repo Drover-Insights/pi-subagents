@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import fs, { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { describe, test } from "node:test";
+import { dirname, join, sep } from "node:path";
+import { describe, mock, test } from "node:test";
 import { promisify } from "node:util";
 import type { ProcReader, SupervisorIdentity } from "../../src/broker/writer-group.ts";
 import { acquireWriterLease, releaseWhenEmpty } from "../../src/broker/writer-lease.ts";
@@ -12,6 +13,18 @@ import "../support/temp-root.ts";
 import { acquired, files, group, LEASED, proc, request, SELF_NS, statLine, storeRoot, supervisor, supervisorAlive } from "../support/writer-lease-store.ts";
 
 const run = promisify(execFile);
+
+/** Run `body` with `fs[name]` replaced for every importer, ESM named imports included. */
+function withFs<K extends "openSync" | "fsyncSync" | "unlinkSync">(name: K, replacement: (typeof fs)[K], body: () => void): void {
+	const hooked = mock.method(fs, name, replacement as never);
+	syncBuiltinESMExports();
+	try {
+		body();
+	} finally {
+		hooked.mock.restore();
+		syncBuiltinESMExports();
+	}
+}
 
 describe("writer lease store", () => {
 	test("acquires one durable lease per worktree in a private directory, binding the launch to it", () => {
@@ -41,6 +54,49 @@ describe("writer lease store", () => {
 		assert.equal(lease.number, 1);
 		assert.match(record.containmentKey, /^call-1#lease-1-[0-9a-f-]{36}$/);
 		assert.equal(lease.containmentKey, record.containmentKey);
+	});
+
+	test("creating the store and key directories fsyncs each one's parent, so a crash cannot lose them", () => {
+		const root = storeRoot();
+		const opened = new Map<number, string>();
+		const synced: string[] = [];
+		const { openSync, fsyncSync } = fs;
+
+		withFs("openSync", ((path: fs.PathLike, ...rest: never[]) => {
+			const fd = (openSync as (...args: unknown[]) => number)(path, ...rest);
+			opened.set(fd, String(path));
+			return fd;
+		}) as typeof fs.openSync, () =>
+			withFs("fsyncSync", ((fd: number) => {
+				synced.push(opened.get(fd) ?? "");
+				fsyncSync(fd);
+			}) as typeof fs.fsyncSync, () => {
+				acquired(root, supervisorAlive);
+			}),
+		);
+
+		assert.ok(synced.includes(dirname(root)), "the store root's parent");
+		assert.ok(synced.includes(root), "the key directory's parent");
+	});
+
+	test("a failed temp-file unlink after the record is linked still acquires the lease", () => {
+		const root = storeRoot();
+		const { unlinkSync } = fs;
+		let refused = 0;
+
+		withFs("unlinkSync", ((path: fs.PathLike) => {
+			if (String(path).includes(`${sep}tmp${sep}`) && String(path).startsWith(root)) {
+				refused++;
+				throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+			}
+			unlinkSync(path);
+		}) as typeof fs.unlinkSync, () => {
+			acquired(root, supervisorAlive);
+			assert.equal(acquireWriterLease(root, request("call-2"), { reader: supervisorAlive, supervisor }).status, "held");
+		});
+
+		assert.equal(refused, 1);
+		assert.deepEqual(files(root), ["lease-1.json"]);
 	});
 
 	test("a held lease rejects a second launch into the same worktree", () => {
