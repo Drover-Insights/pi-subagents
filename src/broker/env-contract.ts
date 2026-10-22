@@ -15,7 +15,12 @@ const VERSION = 2;
 /** The worktree a writer's sandboxes may use, as the parent validated it. */
 export type PinnedWorktree = { top: string; commonDir: string; worktreeGitDir: string; branch: string };
 
-/** A writer's pinned worktree, with the launch and execution generation it belongs to. */
+/**
+ * A writer's pinned worktree, with its lease's containment key and its
+ * execution generation. `launchId` carries the containment key, an opaque
+ * value the child only uses to name its containment directory; it is not the
+ * launch's tool call or request id.
+ */
 export type WriterIdentity = PinnedWorktree & { launchId: string; generation: number };
 
 export type ToolBrokerConfig =

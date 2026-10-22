@@ -32,12 +32,15 @@ describe("writer lease store", () => {
 			branch: "task",
 			head: LEASED.head,
 			launchId: "call-1",
+			containmentKey: record.containmentKey,
 			policyGeneration: "gen-7",
 			bootId: "boot-1",
 			supervisor: { pid: 50, startTime: "100", pidNamespace: SELF_NS },
 			acquiredAt: record.acquiredAt,
 		});
 		assert.equal(lease.number, 1);
+		assert.match(record.containmentKey, /^call-1#lease-1-[0-9a-f-]{36}$/);
+		assert.equal(lease.containmentKey, record.containmentKey);
 	});
 
 	test("a held lease rejects a second launch into the same worktree", () => {

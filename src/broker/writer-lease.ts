@@ -25,7 +25,7 @@
  * waived by a proof; a genuine unproven spawn found the name taken records
  * itself as `lease-<n>.spawn-unproven-late.json`, which always blocks.
  */
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { createMarker, exists, linkRecord, privateDirectory, readJson } from "./lease-records.ts";
@@ -59,6 +59,8 @@ type LeaseRecord = {
 	branch: string;
 	head: string;
 	launchId: string;
+	/** What the lease's writer keys its containment records by; absent from leases taken before they were keyed per lease. */
+	containmentKey?: string;
 	policyGeneration: string;
 	bootId: string;
 	supervisor: Omit<SupervisorIdentity, "bootId">;
@@ -199,25 +201,30 @@ export class WriterLease {
 	readonly worktree: string;
 	/** The worktree identity the lease was taken for. */
 	readonly pinned: PinnedWorktree;
-	readonly launchId: string;
+	/** What this lease's writer keys its containment records by, so no other lease reads them. */
+	readonly containmentKey: string;
 	private readonly supervisorPidNamespace: string;
 	/** Why a spawn of this lease may have left an unrecorded writer, once one has. */
 	private unprovenSpawn: string | undefined;
 	/** Why this lease was contained, held in memory in case its marker cannot be written. */
 	private containedInMemory: string | undefined;
 
-	constructor(dir: string, number: number, pinned: PinnedWorktree, launchId: string, supervisorPidNamespace: string) {
+	constructor(dir: string, number: number, pinned: PinnedWorktree, containmentKey: string, supervisorPidNamespace: string) {
 		this.dir = dir;
 		this.number = number;
 		this.worktree = pinned.top;
 		this.pinned = pinned;
-		this.launchId = launchId;
+		this.containmentKey = containmentKey;
 		this.supervisorPidNamespace = supervisorPidNamespace;
 	}
 
-	/** The identity generation `generation` of this lease's writer is pinned to. */
+	/**
+	 * The identity generation `generation` of this lease's writer is pinned to.
+	 * Its `launchId` is the lease's containment key: the child uses it only to
+	 * key its containment records, which must belong to this lease alone.
+	 */
 	identity(generation: number): WriterIdentity {
-		return { ...this.pinned, launchId: this.launchId, generation };
+		return { ...this.pinned, launchId: this.containmentKey, generation };
 	}
 
 	private get name(): string {
@@ -277,7 +284,7 @@ export class WriterLease {
 		try {
 			const contained = this.containedReason();
 			if (contained !== undefined) return contained;
-			return inspectWriterTree(this.pinned, this.launchId, this.proveEmpty(reader).proven);
+			return inspectWriterTree(this.pinned, this.containmentKey, this.proveEmpty(reader).proven);
 		} catch (error) {
 			return `cannot inspect the writer's lease: ${error instanceof Error ? error.message : String(error)}`;
 		}
@@ -320,7 +327,7 @@ export class WriterLease {
 		// A contained lease ends only through an operator's clear, which the next acquire honors.
 		const contained = this.containedReason();
 		if (contained !== undefined) return { status: "held", reason: heldContained(this.number, contained) };
-		const breach = inspectWriterTree(this.pinned, this.launchId, true);
+		const breach = inspectWriterTree(this.pinned, this.containmentKey, true);
 		if (breach !== null) {
 			this.markContained(breach);
 			return { status: "held", reason: heldContained(this.number, breach) };
@@ -433,6 +440,26 @@ export async function awaitGroupsEmpty(
 	}
 }
 
+/**
+ * A new lease's containment key: its launch id and number with a random
+ * nonce, stored in its record, so no other lease ever reads its containment
+ * records: not a reused launch id, another worktree's lease, or a lease of
+ * another lease store with the same number.
+ */
+function newContainmentKey(number: number, launchId: string): string {
+	return `${launchId}#lease-${number}-${randomUUID()}`;
+}
+
+/**
+ * Where a reclaimed lease's writer kept its containment records: its stored
+ * key, or its launch id for a lease taken before keys were stored. Undefined
+ * for any other value, which contains the lease.
+ */
+function recordContainmentKey(record: LeaseRecord): string | undefined {
+	if (record.containmentKey === undefined) return record.launchId;
+	return typeof record.containmentKey === "string" && record.containmentKey !== "" ? record.containmentKey : undefined;
+}
+
 function keyDirectory(root: string, worktree: WriterWorktree): string {
 	const key = createHash("sha256").update(`${worktree.commonDir}\0${worktree.gitDir}`).digest("hex");
 	return join(root, key);
@@ -495,7 +522,8 @@ function tryReclaim(dir: string, number: number, reader: ProcReader): string | n
 	const proof = proveLeaseEmpty(dir, number, record.supervisor.pidNamespace, reader);
 	if (!proof.proven) return `${held}; its supervisor is dead but ${proof.reason}`;
 	const pinned = { top: record.worktree, commonDir: record.repository, worktreeGitDir: record.gitDir, branch: record.branch };
-	const breach = inspectWriterTree(pinned, record.launchId, true);
+	const key = recordContainmentKey(record);
+	const breach = key === undefined ? `lease-${number}.json has a malformed containment key` : inspectWriterTree(pinned, key, true);
 	if (breach !== null) {
 		try {
 			writeContainment(dir, number, breach);
@@ -527,6 +555,7 @@ function acquire(root: string, request: WriterLeaseRequest, options: WriterLease
 	}
 	const number = latest + 1;
 	const { worktree } = request;
+	const containmentKey = newContainmentKey(number, request.launchId);
 	const record: LeaseRecord = {
 		version: 1,
 		number,
@@ -536,6 +565,7 @@ function acquire(root: string, request: WriterLeaseRequest, options: WriterLease
 		branch: worktree.branch,
 		head: worktree.head,
 		launchId: request.launchId,
+		containmentKey,
 		policyGeneration: request.policyGeneration,
 		bootId: supervisor.bootId,
 		supervisor: { pid: supervisor.pid, startTime: supervisor.startTime, pidNamespace: supervisor.pidNamespace },
@@ -545,7 +575,7 @@ function acquire(root: string, request: WriterLeaseRequest, options: WriterLease
 		return { status: "held", reason: "another launch acquired the worktree's writer lease first" };
 	}
 	const pinned = { top: worktree.top, commonDir: worktree.commonDir, worktreeGitDir: worktree.gitDir, branch: worktree.branch };
-	return { status: "acquired", lease: new WriterLease(dir, number, pinned, request.launchId, supervisor.pidNamespace) };
+	return { status: "acquired", lease: new WriterLease(dir, number, pinned, containmentKey, supervisor.pidNamespace) };
 }
 
 /** Acquire the writer lease for a worktree. Never throws. */
