@@ -2,7 +2,7 @@
  * A managed writer child's containment: once its pinned worktree identity no
  * longer holds, or a tool left Git metadata in its worktree, every brokered
  * tool stays disabled for the rest of the session. The child records why
- * under the launch's containment directory, where the parent reads it before
+ * under its lease's containment directory, where the parent reads it before
  * releasing the lease or starting another generation.
  *
  * Writer sandboxes and the seal walk after each one run one at a time, so no
@@ -22,8 +22,8 @@ const QUARANTINE = /^quarantine-(g\d+|parent)$/;
  * and each quarantine that moved anything, since a crash can land between a
  * walk's move and its record. Throws when unreadable.
  */
-function readContainmentRecords(pinned: PinnedWorktree, launchId: string): string[] {
-	const dir = containmentDirectory(pinned, launchId);
+function readContainmentRecords(pinned: PinnedWorktree, containmentKey: string): string[] {
+	const dir = containmentDirectory(pinned, containmentKey);
 	let names: string[];
 	try {
 		names = readdirSync(dir);
@@ -54,17 +54,17 @@ function readContainmentRecords(pinned: PinnedWorktree, launchId: string): strin
  * when `walk` is true, quarantines writer-created Git metadata. Walk only
  * once the writer's execution group is proven empty. Never throws.
  */
-export function inspectWriterTree(pinned: PinnedWorktree, launchId: string, walk: boolean): string | null {
+export function inspectWriterTree(pinned: PinnedWorktree, containmentKey: string, walk: boolean): string | null {
 	const changed = checkPinnedWorktree(pinned.top, pinned);
 	if (changed !== null) return changed;
 	try {
-		const records = readContainmentRecords(pinned, launchId);
+		const records = readContainmentRecords(pinned, containmentKey);
 		if (records.length > 0) return `the writer contained itself: ${records.join("; ")}`;
 	} catch (error) {
 		return `cannot read the writer's containment records: ${error instanceof Error ? error.message : String(error)}`;
 	}
 	if (!walk) return null;
-	const seal = sealWriterTree(pinned, join(containmentDirectory(pinned, launchId), "quarantine-parent"));
+	const seal = sealWriterTree(pinned, join(containmentDirectory(pinned, containmentKey), "quarantine-parent"));
 	return seal.status === "breached" ? breachReason(seal) : null;
 }
 

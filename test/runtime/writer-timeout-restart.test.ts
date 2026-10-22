@@ -153,9 +153,11 @@ describe("writer timeout wrap-up restart", { skip }, () => {
 			commonDir: repo.common,
 			worktreeGitDir: repo.gitDir,
 			branch: "task",
-			launchId: "call-1",
+			// The lease's containment key, so generation 2 shares generation 1's containment and no other lease's.
+			launchId: writerLease.containmentKey,
 			generation: 2,
 		});
+		assert.match(writerLease.containmentKey, /^call-1#lease-1-[0-9a-f-]{36}$/);
 	});
 
 	for (const [label, change, reason] of [

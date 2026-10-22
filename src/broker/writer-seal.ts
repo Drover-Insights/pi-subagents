@@ -34,12 +34,13 @@ type SealResult =
 	  };
 
 /**
- * Where a launch's containment records and quarantined entries live: under
- * the repository's common Git directory, which no writer sandbox can write
- * and which the parent and its child both know.
+ * Where a writer lease's containment records and quarantined entries live:
+ * under the repository's common Git directory, which no writer sandbox can
+ * write and which the parent and its child both know, keyed by the lease's
+ * containment key, which the child receives as its identity's `launchId`.
  */
-export function containmentDirectory(pinned: PinnedWorktree, launchId: string): string {
-	const key = createHash("sha256").update(launchId).digest("hex");
+export function containmentDirectory(pinned: PinnedWorktree, containmentKey: string): string {
+	const key = createHash("sha256").update(containmentKey).digest("hex");
 	return join(pinned.commonDir, "pi-subagents", "writer-containment", key);
 }
 
