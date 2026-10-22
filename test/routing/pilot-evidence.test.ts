@@ -518,7 +518,7 @@ describe("pilot evidence package entrypoint", () => {
 			"  status: result.status,",
 			"  verdicts: result.evidence?.verdict.length,",
 			'  trusted: globalThis[Symbol.for("drover.pi-subagents.trusted-launch")] !== undefined,',
-			'  foreign: loaded.filter((url) => !url.startsWith("node:") && !/\\/src\\/routing\\/(pilot-evidence|pilot-attempt-store|write-once-records)\\.ts$/.test(url)),',
+			'  foreign: loaded.filter((url) => !url.startsWith("node:") && !/\\/src\\/(routing\\/(pilot-evidence|pilot-attempt-store)|write-once-records)\\.ts$/.test(url)),',
 			"}));",
 		].join("\n");
 		const output = execFileSync(process.execPath, ["--input-type=module", "-e", script], {

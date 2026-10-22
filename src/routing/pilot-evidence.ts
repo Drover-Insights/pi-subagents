@@ -16,7 +16,7 @@ import {
 	RECORD_FILE,
 	RESERVATION_FILE,
 } from "./pilot-attempt-store.ts";
-import { existingPrivateDirectory, isObject, message, sha256 } from "./write-once-records.ts";
+import { existingPrivateDirectory, isObject, message, sha256 } from "../write-once-records.ts";
 
 export { pilotCaseDigest };
 export type { PilotOutcome, PilotReceipt };

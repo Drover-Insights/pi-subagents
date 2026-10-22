@@ -28,7 +28,7 @@ import {
 	sha256,
 	StoreError,
 	tryReadJson,
-} from "./write-once-records.ts";
+} from "../write-once-records.ts";
 
 export type PilotReceipt = {
 	generation: string;
