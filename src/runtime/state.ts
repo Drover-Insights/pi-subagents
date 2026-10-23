@@ -1,4 +1,5 @@
 import { outstandingWork } from "./outstanding-work.ts";
+import { resetPilotIsolationForTest } from "./pilot-isolation.ts";
 import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
 import { getSubagentTerminalStopReason } from "../session/session.ts";
 import type { CompletedSubagentResult, RunningSubagent, SubagentCompletionStatus, SubagentResult } from "../types.ts";
@@ -158,6 +159,7 @@ export function resetRuntimeStateForTest(resetAmbient: () => void): void {
 		releaseSpawnWidthSlot(agent);
 	}
 	runningSubagents.clear();
+	resetPilotIsolationForTest();
 	outstandingWork.reset();
 	completedSubagentResults.clear();
 	resetSpawnWidthForTest();

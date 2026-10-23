@@ -7,6 +7,7 @@ import {
 	resolveSubagentBlocking,
 	shouldUseBackgroundLaunch,
 } from "../launch/policy.ts";
+import { InteractiveLaunchError } from "../launch/interactive.ts";
 import type { SubagentLaunchContext } from "../launch/prep.ts";
 import {
 	claimSpawnWidthSlot,
@@ -17,7 +18,8 @@ import {
 	tryAcquireSlots,
 } from "../runtime/spawn-width.ts";
 import { recordManagedLaunchSnapshot } from "../routing/managed-resume-authority.ts";
-import { asSubagentToolResult, markSubagentBatchBlocking } from "../runtime/state.ts";
+import { acquirePilotIsolation, isolationClassOf, noteChildUntracked } from "../runtime/pilot-isolation.ts";
+import { asSubagentToolResult, markSubagentBatchBlocking, runningSubagents } from "../runtime/state.ts";
 import { parseSpawnEnv, resolveSpawnPolicy } from "../spawn/policy.ts";
 import type { SandboxProbe } from "../broker/sandbox-run.ts";
 import type { WriterLease } from "../broker/writer-lease.ts";
@@ -32,7 +34,7 @@ import {
 	reservePilotAttempts,
 	settleFailedPilotAttempt,
 } from "./pilot-attempts.ts";
-import { authorizeSubagentLaunches, type SubagentRouting } from "./subagent-routing.ts";
+import { authorizeSubagentLaunches, policyRejection, type SubagentRouting } from "./subagent-routing.ts";
 import { type AcquireWriterLease, acquireWriterLeases, releaseUnlaunchedWriterLeases } from "./writer-leases.ts";
 
 type ToolResult = ReturnType<typeof asSubagentToolResult>;
@@ -230,7 +232,7 @@ export async function launchSubagentEntries(
 	entries: readonly SubagentLaunchEntry[],
 	options: SubagentLaunchOptions,
 ): Promise<SubagentLaunchPhase> {
-	const { ctx, pi, runtime } = options;
+	const { ctx, runtime } = options;
 	const routing = authorizeSubagentLaunches(entries, {
 		launchId: options.launchId,
 		hasUI: ctx.hasUI,
@@ -240,6 +242,28 @@ export async function launchSubagentEntries(
 		...(runtime.probeWriterConfinement ? { probeWriterConfinement: runtime.probeWriterConfinement } : {}),
 	});
 	if (!Array.isArray(routing)) return rejectedPhase(routing);
+	// Checked before any slot or attempt is taken, and held until every child is tracked.
+	const isolation = acquirePilotIsolation(
+		routing.map((entry, index) => ({
+			name: entries[index].child.name,
+			class: isolationClassOf(entry.evidence),
+		})),
+		runningSubagents.values(),
+	);
+	if (isolation.status === "refused") return rejectedPhase(policyRejection("pilot_isolation", isolation.message));
+	try {
+		return await launchAuthorizedEntries(entries, routing, options);
+	} finally {
+		isolation.release();
+	}
+}
+
+async function launchAuthorizedEntries(
+	entries: readonly SubagentLaunchEntry[],
+	routing: SubagentRouting[],
+	options: SubagentLaunchOptions,
+): Promise<SubagentLaunchPhase> {
+	const { ctx, pi, runtime } = options;
 	// Slot cost per child: 1 normally, N candidates for a verified
 	// fan-out (SPEC: N candidates consume N spawn slots, reserved
 	// atomically before any worktree creation or verifier spend).
@@ -311,6 +335,17 @@ export async function launchSubagentEntries(
 		);
 		refundPilotAttempts(pilotAttempts.slice(neverStarted), ["an earlier child of the same call failed to launch"]);
 		if (launching !== null) settleFailedPilotAttempt(pilotAttempts[launching], error, leaseReleased);
+		// A pane that exists may hold a started child the parent never tracked.
+		if (launching !== null && error instanceof InteractiveLaunchError) {
+			const evidence = routing[launching].evidence;
+			noteChildUntracked({
+				id: routing[launching].launchId,
+				name: entries[launching].child.name,
+				mode: "interactive",
+				surface: error.surface,
+				routing: evidence.status === "managed" ? evidence : undefined,
+			});
+		}
 		throw error;
 	}
 	runtime.startWidgetRefresh();

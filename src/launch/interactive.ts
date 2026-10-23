@@ -37,6 +37,16 @@ import { writeSystemPromptArtifact, writeTaskArtifact } from "./prompt-artifacts
 import { expandSubagentTask } from "./task-expansion.ts";
 import { traceSubagentLaunch } from "./trace.ts";
 
+/** A pane child's launch failed after its pane existed, so the child may be running in it. */
+export class InteractiveLaunchError extends Error {
+	readonly surface: string;
+	constructor(surface: string, cause: unknown) {
+		super(cause instanceof Error ? cause.message : String(cause), { cause });
+		this.name = "InteractiveLaunchError";
+		this.surface = surface;
+	}
+}
+
 export interface InteractiveLaunchRuntime {
 	getContextWindow(modelRef: string | undefined): number | undefined;
 	getShellReadyDelayMs(): number;
@@ -187,7 +197,7 @@ export async function launchInteractiveSubagent(
 		doneSentinelFile,
 		...(zellijTarget ? { deriveZellijPaneSurface: true } : {}),
 	});
-	let surface: string;
+	let surface: string | undefined;
 	try {
 		surface =
 			ordinarySurface ??
@@ -213,9 +223,11 @@ export async function launchInteractiveSubagent(
 		});
 		if (!zellijTarget) sendShellCommand(surface, command);
 	} catch (error) {
-		// The pane never received the command, so nothing will consume the
-		// capsule. Delete it rather than leaving credentials on disk.
+		// Delivery failed, so nothing will consume the capsule. Delete it rather
+		// than leaving credentials on disk.
 		dispose();
+		// A failed send may still have started the child in its pane.
+		if (surface !== undefined) throw new InteractiveLaunchError(surface, error);
 		throw error;
 	}
 	return {

@@ -1,5 +1,5 @@
 import { mkdirSync, readdirSync } from "node:fs";
-import { launchInteractiveSubagent } from "../../src/launch/interactive.ts";
+import { InteractiveLaunchError, launchInteractiveSubagent } from "../../src/launch/interactive.ts";
 import {
 	assert,
 	createTestDir,
@@ -63,7 +63,13 @@ esac
 					},
 					{ getContextWindow: () => undefined, getShellReadyDelayMs: () => 0 },
 				),
-				/send-keys|Command failed|tmux/i,
+				(error: unknown) => {
+					// The pane exists and may have run the command, so the failure names it.
+					assert.ok(error instanceof InteractiveLaunchError, String(error));
+					assert.equal(error.surface, "%42");
+					assert.match(error.message, /send-keys|Command failed|tmux/i);
+					return true;
+				},
 			);
 
 			assert.equal(

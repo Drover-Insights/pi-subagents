@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { getAgentConfigDir, loadAgentDefaults as loadAgentDefaultsFromDefinitions } from "../agents/definitions.ts";
 import { toolBrokerEnv } from "../broker/env-contract.ts";
 import { recordOwnedGeneration } from "../routing/managed-ownership.ts";
+import { acquirePilotIsolation, isolationClassOf, noteChildUntracked } from "./pilot-isolation.ts";
 import { getArtifactStorageRoot } from "../artifact-storage.ts";
 import { buildAppendSystemInheritancePlan } from "../launch/append-system.ts";
 import { getPiInvocation, getSubagentChildProcessEnv } from "../launch/child-command.ts";
@@ -89,6 +90,12 @@ import {
 	tryAcquireSlots,
 } from "./spawn-width.ts";
 
+/** The resume's pilot isolation hold, and the child once it started. */
+interface ResumeIsolation {
+	release(): void;
+	started?: RunningSubagent;
+}
+
 export interface ResumeServiceRuntime {
 	getShellReadyDelayMs(): number;
 	isMuxAvailable(): boolean;
@@ -152,8 +159,9 @@ export async function resumeSubagentSession(
 	}
 
 	let claimedRunning: RunningSubagent | undefined;
+	const isolation: ResumeIsolation = { release: () => {} };
 	try {
-		const running = await resumeSubagentSessionWithoutWidth(input, runtime);
+		const running = await resumeSubagentSessionWithoutWidth(input, runtime, isolation);
 		claimSpawnWidthSlot(running);
 		claimedRunning = running;
 		if (running.completionPromise) {
@@ -163,13 +171,18 @@ export async function resumeSubagentSession(
 	} catch (error) {
 		if (claimedRunning) releaseSpawnWidthSlot(claimedRunning);
 		else releaseSlots(1);
+		// A child that started but was never tracked keeps counting until it is proven gone.
+		if (isolation.started && !runtime.runningSubagents.has(isolation.started.id)) noteChildUntracked(isolation.started);
 		throw error;
+	} finally {
+		isolation.release();
 	}
 }
 
 async function resumeSubagentSessionWithoutWidth(
 	input: ResumeSessionInput,
 	runtime: ResumeServiceRuntime,
+	isolation: ResumeIsolation,
 ): Promise<RunningSubagent> {
 	const { sessionFile, task } = input;
 	// A trusted resume takes everything but its task from the session's
@@ -208,6 +221,20 @@ async function resumeSubagentSessionWithoutWidth(
 	});
 	if (managedDecision.status === "refused") throw new ResumeRefusal("resume_denied", managedDecision.message);
 	const managed = managedDecision.status === "authorized" ? managedDecision : undefined;
+	// A pilot resume appends to its attempt; neither it nor an unmanaged resume may run beside the other kind.
+	const held = acquirePilotIsolation(
+		[
+			{
+				name: caller.name ?? sessionMetadataEntries[0]?.name ?? "resumed session",
+				class: isolationClassOf(managed?.evidence),
+			},
+		],
+		runtime.runningSubagents.values(),
+	);
+	if (held.status === "refused") {
+		throw new ResumeRefusal("resume_denied", `Routing policy blocked the resume (pilot_isolation): ${held.message}`);
+	}
+	isolation.release = held.release;
 	const metadata = managed ? getResumeLaunchMetadata(managed.metadata) : sessionResumeMetadata;
 	const launchMetadataEntries = managed ? [managed.metadata] : sessionMetadataEntries;
 	const launchMetadata = launchMetadataEntries[0];
@@ -457,6 +484,7 @@ async function resumeSubagentSessionWithoutWidth(
 		}
 		child.unref();
 		running.childProcess = child;
+		isolation.started = running;
 		if (managed && managedTicket) {
 			recordOwnedGeneration(getAgentConfigDir(), running, managed.snapshot.ownershipToken, managedTicket.generation);
 		}
@@ -516,11 +544,13 @@ async function resumeSubagentSessionWithoutWidth(
 			const surface =
 				ordinarySurface ??
 				(await createZellijCommandSurface(surfaceName, zellijTarget!, getZellijShellCommand(command), zellijContext));
+			// The pane counts from the moment it exists: a failed send may still have started the child.
+			running.surface = surface;
+			isolation.started = running;
 			if (!zellijTarget) {
 				await new Promise<void>((resolve) => setTimeout(resolve, runtime.getShellReadyDelayMs()));
 				sendShellCommand(surface, command);
 			}
-			running.surface = surface;
 			running.doneSentinelFile = doneSentinelFile;
 			running.zellijTarget = zellijTarget;
 		} catch (error) {
