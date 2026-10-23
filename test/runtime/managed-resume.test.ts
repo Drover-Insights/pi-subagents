@@ -367,6 +367,17 @@ describe("managed resume narrows to the launch snapshot", () => {
 		);
 	});
 
+	it("refuses to resume a managed agent whose definition now declares provider-extensions", async () => {
+		const running = await managedLaunchHarness().run(worker);
+		writeManagedDefinition(agentDir, "pilot-worker", "provider-extensions: claude-primary=/x/provider.ts");
+		const refused = capturePiInvocation();
+		await assertRefused(
+			resumeSubagentSession({ sessionFile: running.sessionFile, task: "Continue." }, resumeRuntime()),
+			/pilot-worker.*must not set provider-extensions/,
+			refused,
+		);
+	});
+
 	it("refuses a resume whose recorded working directory now leads elsewhere", async () => {
 		const harness = managedLaunchHarness();
 		const running = await harness.run(worker);

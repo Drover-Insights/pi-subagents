@@ -187,6 +187,7 @@ describe("policy-managed child launch", () => {
 			["task-expansion: shell", /pilot-worker.*task expansion/],
 			["env: PI_CODING_AGENT_DIR=/elsewhere", /pilot-worker.*env/],
 			["cwd: /elsewhere", /pilot-worker.*cwd/],
+			["provider-extensions: claude-primary=/x/provider.ts", /pilot-worker.*must not set provider-extensions/],
 		];
 		for (const [field, message] of forbidden) {
 			await assert.rejects(() => managedLaunch({ global: [field] }), message);

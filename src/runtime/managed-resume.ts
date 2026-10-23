@@ -52,6 +52,13 @@ export function decideManagedResume(input: {
 				{ globalOnly: true },
 			)
 		: null;
+	// The declaration is unmanaged-only; a managed resume must not ignore it silently.
+	if (definition?.providerExtensions) {
+		return {
+			status: "refused",
+			message: `Routing policy blocked the resume: policy-managed agent ${recorded?.evidence.agent} must not set provider-extensions.`,
+		};
+	}
 	const authority = authorizeManagedResume({
 		sessionFile: input.sessionFile,
 		policyState,

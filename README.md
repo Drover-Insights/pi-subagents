@@ -166,6 +166,7 @@ For a fuller example of the intended style, see the [scout agent gist by edxeth]
 | `allowed-models` | unset | Extra exact model refs the parent may choose when `allow-model-override` is enabled. The agent `model` is implicitly allowed and does not need to be repeated. `provider/model` allows any thinking level for that model; `provider/model:thinking` allows only that thinking level. |
 | `cwd` | parent cwd | Working directory for the child |
 | `extensions` | `all` | Which extension code loads in the child: `all`, `none`, or a comma-separated allowlist |
+| `provider-extensions` | unset | Extension sources that load only when the child's model is on an exact provider: one `provider=source` per line. See [Provider-dependent extensions](#provider-dependent-extensions). |
 | `tools` | `all` | Child tool availability: `all`, `none`, or a comma-separated allowlist of Pi tool names. Lists may include built-in, extension/custom, and protocol tools. `none` disables built-in tools while preserving extension/custom tools unless denied. |
 | `deny-tools` | unset | Final comma-separated tool names to remove from the child after built-in tools, extensions, and protocol tools are selected |
 | `skills` | `all` | Child skill availability: `all`, `none`, or a comma-separated allowlist resolved by skill name. Entries may carry a visibility annotation: `name=auto` advertises the skill in the child's system prompt even when its frontmatter disables model invocation; `name=manual` hides it from that child only. |
@@ -682,6 +683,8 @@ Resume tries to preserve the original launch shape: mode, model, prompt style, c
 
 A policy-managed child resumes only from its recorded launch authority snapshot, narrowed by the current policy; see [Canonical routing policy](#canonical-routing-policy).
 
+A child launched with `provider-extensions` resumes with the provider and extension list its launch recorded, whatever the parent model or the agent file says now. A resume whose model would leave that provider is refused before the child starts; with `allow-model-override: false` a caller's model is ignored as usual. A session launched without the field never gains it on resume. A `fork` child does not inherit its parent's launch metadata, so it resumes from its own.
+
 One exception: attempt sessions of an `llm-as-a-verifier` launch are never resumable — their worktree copy is removed after the winner is picked. `subagent_resume` refuses with a dedicated error; launch the agent again instead.
 
 ## Child output
@@ -719,6 +722,28 @@ name: reviewer
 extensions: ./extensions/local.ts, npm:@foo/bar, git:github.com/user/repo
 ---
 ```
+
+### Provider-dependent extensions
+
+`provider-extensions` loads an extension only when the child runs on a given provider. Use it for a provider extension that must not start on other providers, for example one that fails without its own configuration:
+
+```md
+---
+name: researcher
+extensions: npm:pi-web-access
+provider-extensions: |
+  claude-primary=git:github.com/example/claude-provider@v1
+  claude-primary=./extensions/claude-tools.ts
+---
+```
+
+- Each line is `<provider>=<source>`. The provider is matched exactly and case-sensitively against the provider of the child's effective model, after the model, override and inheritance rules have run. There are no wildcards or prefixes. Sources resolve like `extensions` entries.
+- The child loads the `extensions` list first, then the matching sources in declaration order, without exact duplicates. A child on another provider loads only the `extensions` list.
+- Declaring `provider-extensions` turns off ambient extension discovery, even when no line matches and `extensions` is unset or `all`.
+- The effective model must be a qualified `provider/model`. A bare or missing model fails the launch before the child starts. The child starts with `--provider <provider>`, so Pi cannot read the model as a raw id on another provider.
+- An empty or malformed declaration fails agent loading. So do a source containing `,` and a source of `all` or `none`.
+- An agent that declares it must not set `flags`, which could replace the selected model or extensions. It needs `session-mode: lineage-only` or `fork`, the modes that record launch metadata. Policy-managed agents must not declare it, at launch or at resume.
+- When a matching provider extension fails to load, or does not register the selected provider, Pi exits before any model request and no model on another provider runs. The parent's result carries Pi's error: from stderr for a background child, from the last lines of the pane for an interactive one.
 
 ### Child skills
 
@@ -1202,6 +1227,18 @@ Herdr validation record for this release:
 - `bunx tsc --noEmit` passes type checking.
 - `npm test` runs the registered Herdr mux and launch suites through the repository test entrypoint.
 - `npm run test:live-herdr-mux` and `npm run test:live-herdr-pi` pass their skip guards when `PI_SUBAGENT_ALLOW_LIVE_WINDOWS` and `PI_SUBAGENT_LIVE_MODEL` are unset. A real live run requires the opt-in variables above.
+
+### Provider-extension qualification
+
+`scripts/provider-extensions-qualification/run.mjs` drives `provider-extensions` through real Pi CLIs: a parent that loads this checkout, driven by a scripted fixture model, launches and resumes real child processes in background, interactive (private tmux server) and resume modes. Models are fake loopback endpoints and a fake Claude CLI. The run executes in its own loopback-only network namespace and PID namespace (`unshare`), so no process outlives it. Every Node process records the Pi version it loaded and any non-loopback TCP connection attempt; the namespace, not that record, is the network barrier. `pi-multi-account` pins `anthropic` to the public API over `models.json`, so in the consumer suite each Node process redirects `fetch` calls for `https://api.anthropic.com` to the loopback endpoint and records each redirect.
+
+```bash
+node scripts/provider-extensions-qualification/run.mjs \
+  --root <qualification root> --run-id <short id> --host 0.87.1 \
+  --suite generic --mode background
+```
+
+`<root>/hosts/host-<version>` must hold an installed, read-only Pi host (`node_modules/@earendil-works/pi-coding-agent`); the `consumer` suite also needs `pi-multi-account`, `pi-web-access`, `extensions/drover-quota-router` in the host and `<root>/sources/pi-claude-code-provider`. Each cell writes its verdict under `<root>/runs/<id>/evidence/`. The full matrix is the generic suite on Pi 0.85.0 and 0.87.1 and the consumer suite on 0.85.1 and 0.87.1, each in all three modes; other hosts in the `>=0.85.0` range are not certified by these runs.
 
 ## Credits
 

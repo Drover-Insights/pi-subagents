@@ -29,6 +29,7 @@ import { buildChildLaunchPlan, type ModelRegistryLike } from "./child-launch-pla
 import { CHILD_CONTEXT_BOUNDARY_SYSTEM_PROMPT } from "./context-boundary.ts";
 import { parseEnvString } from "./env.ts";
 import { getLaunchEnvCollisions } from "./launch-overrides.ts";
+import { getProviderConstraintArgs } from "./provider-extensions.ts";
 import { PI_SUBAGENT_SKILL_VISIBILITY } from "./skill-visibility.ts";
 import {
 	resolveSubagentNoContextFiles,
@@ -87,6 +88,7 @@ export interface PreparedSubagentLaunch {
 	spawnPolicy?: SpawnPolicyResult;
 	/** The re-verified resource inventory of a policy-managed child. */
 	policyLaunch?: PolicyLaunch;
+	providerExtensionAuthority?: PersistedSubagentLaunchMetadata["providerExtensionAuthority"];
 }
 
 function loadAgentDefaults(
@@ -137,6 +139,7 @@ function applyPolicyLaunch(params: SubagentParamsInput, agentDefs: AgentDefaults
 		spawning === true || (Array.isArray(spawning) && spawning.length > 0) ? "spawning" : "",
 		agentDefs.taskExpansion === "shell" ? "task expansion" : "",
 		agentDefs.llmAsVerifier === true ? "verifier fan-out" : "",
+		agentDefs.providerExtensions ? "provider-extensions" : "",
 	].filter(Boolean);
 	if (forbidden.length > 0) {
 		throw new Error(`Policy-managed agent ${params.agent} must not set ${forbidden.join(", ")}.`);
@@ -229,6 +232,7 @@ export async function prepareSubagentLaunch(
 		agentAutoExit,
 		spawnPolicy,
 		...(params.policyLaunch ? { policyLaunch: params.policyLaunch } : {}),
+		...(childLaunchPlan.providerExtensionAuthority ? { providerExtensionAuthority: childLaunchPlan.providerExtensionAuthority } : {}),
 	};
 }
 
@@ -346,11 +350,10 @@ export function getPreparedExtensionLaunchArgs(
 	prepared: PreparedSubagentLaunch,
 	mandatoryExtensionPath: string,
 ): string[] {
-	return getExtensionLaunchArgs(
-		prepared.effectiveExtensions,
-		mandatoryExtensionPath,
-		isPreparedChildSpawningAllowed(prepared),
-	);
+	return [
+		...getExtensionLaunchArgs(prepared.effectiveExtensions, mandatoryExtensionPath, isPreparedChildSpawningAllowed(prepared)),
+		...getProviderConstraintArgs(prepared.providerExtensionAuthority),
+	];
 }
 
 export function getPreparedSessionLaunchArgs(
@@ -381,7 +384,7 @@ export async function getPersistedSessionParityArgs(
 ): Promise<string[]> {
 	const args: string[] = [];
 	if (!metadata) return args;
-	if (metadata.modelRef) args.push("--model", metadata.modelRef);
+	if (metadata.modelRef) args.push("--model", metadata.modelRef, ...getProviderConstraintArgs(metadata.providerExtensionAuthority));
 	if (metadata.noContextFiles) args.push("--no-context-files");
 	args.push(...getSubagentToolLaunchArgs(metadata.tools, new Set(metadata.denyTools), spawningAllowed));
 	args.push(
@@ -479,6 +482,7 @@ export function buildPersistedSubagentLaunchMetadata(
 				}
 			: {}),
 		...(prepared.effectiveExtensions !== undefined ? { extensions: prepared.effectiveExtensions } : {}),
+		...(prepared.providerExtensionAuthority ? { providerExtensionAuthority: prepared.providerExtensionAuthority } : {}),
 		noContextFiles: resolveSubagentNoContextFiles(prepared.agentDefs),
 		inheritAppendSystem: prepared.agentDefs?.inheritAppendSystem === true,
 		noSession: resolveSubagentNoSession(prepared.agentDefs),

@@ -138,7 +138,7 @@ function isSchemeLikePath(value: string): boolean {
 	return /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value) && !/^[a-zA-Z]:[\\/]/.test(value);
 }
 
-function resolveSubagentExtensionSource(source: string, baseDir: string): string {
+export function resolveSubagentExtensionSource(source: string, baseDir: string): string {
 	const trimmed = source.trim();
 	if (!trimmed) return trimmed;
 	if (isSchemeLikePath(trimmed)) return trimmed;
