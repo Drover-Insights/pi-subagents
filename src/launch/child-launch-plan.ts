@@ -9,6 +9,12 @@ import { addToolModeDeniedNames, resolveDenyTools } from "../tools/policy.ts";
 import type { SubagentParamsInput } from "../types.ts";
 import { resolveConfiguredExtensionSources } from "./extensions.ts";
 import { resolveSubagentExtensions, resolveSubagentNoSession } from "./policy.ts";
+import {
+	assertNoProviderExtensionFlags,
+	type ProviderExtensionAuthority,
+	resolveProviderExtensionProvider,
+	selectProviderExtensionSources,
+} from "./provider-extensions.ts";
 import { type ResolvedSubagentRuntimePaths, resolveSubagentRuntimePaths } from "./runtime-paths.ts";
 import { buildSkillLaunchPlan, type SkillLaunchPlan } from "./skills.ts";
 
@@ -39,6 +45,8 @@ export interface ChildLaunchPlan {
 	subagentSessionFile: string;
 	sessionTitle?: string;
 	capability: ChildCapabilityPlan;
+	/** Present only for an agent that declares `provider-extensions`. */
+	providerExtensionAuthority?: ProviderExtensionAuthority;
 }
 
 export interface ChildLaunchPlanOptions {
@@ -159,6 +167,7 @@ export function resolveAvailableModelRef(
 
 export async function buildChildLaunchPlan(options: ChildLaunchPlanOptions): Promise<ChildLaunchPlan> {
 	const { params, agentDefs, parentCwd, parentSessionDir } = options;
+	if (agentDefs?.providerExtensions) assertNoProviderExtensionFlags(agentDefs);
 	const hasAllowedModels = !!agentDefs?.allowedModels?.trim();
 	const policyLaunch = params.policyLaunch;
 	const policyModels = policyLaunch ? options.modelRegistry?.getAvailable() : undefined;
@@ -235,7 +244,13 @@ export async function buildChildLaunchPlan(options: ChildLaunchPlanOptions): Pro
 	const tools = params.tools ?? agentDefs?.tools;
 	const skills = params.skills ?? agentDefs?.skills;
 	const injectSkills = agentDefs?.injectSkills;
-	const extensionSources = resolveSubagentExtensions(agentDefs);
+	const conditionalProvider = agentDefs?.providerExtensions
+		? resolveProviderExtensionProvider(effectiveModel)
+		: undefined;
+	const extensionSources =
+		agentDefs && conditionalProvider !== undefined
+			? selectProviderExtensionSources(agentDefs, conditionalProvider)
+			: resolveSubagentExtensions(agentDefs);
 	const extensions = resolveConfiguredExtensionSources(extensionSources, {
 		cwd: runtimePaths.effectiveCwd ?? parentCwd,
 		agentDir: runtimePaths.effectiveAgentConfigDir,
@@ -260,6 +275,9 @@ export async function buildChildLaunchPlan(options: ChildLaunchPlanOptions): Pro
 		runtimePaths,
 		subagentSessionFile,
 		sessionTitle: buildSubagentSessionTitle(params),
+		...(conditionalProvider !== undefined
+			? { providerExtensionAuthority: { provider: conditionalProvider, extensions: extensions ?? [] } }
+			: {}),
 		capability: {
 			tools,
 			skills,

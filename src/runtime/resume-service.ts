@@ -15,6 +15,7 @@ import { parseEnvString } from "../launch/env.ts";
 import { rememberOutputTail } from "../launch/output-tail.ts";
 import { getSkillVisibilitySpec, PI_SUBAGENT_SKILL_VISIBILITY } from "../launch/skill-visibility.ts";
 import { resolveSubagentTimeoutState } from "../launch/policy.ts";
+import { applyProviderExtensionResumeAuthority } from "../launch/provider-extensions.ts";
 import {
 	getExtensionLaunchArgs,
 	getPersistedPromptLaunchArgs,
@@ -243,7 +244,7 @@ async function resumeSubagentSessionWithoutWidth(
 		launchMetadata && latestLaunchMetadata && latestLaunchMetadata !== launchMetadata
 			? mergeResumeInvocationMetadata(launchMetadata, latestLaunchMetadata)
 			: launchMetadata;
-	const invocationMetadata = managed
+	const resolvedInvocationMetadata = managed
 		? managed.metadata
 		: resolveResumeLaunchMetadataForInvocation(
 				invocationMetadataSource,
@@ -251,12 +252,23 @@ async function resumeSubagentSessionWithoutWidth(
 				caller.thinking,
 				runtime.modelRegistry,
 			);
+	let invocationMetadata = resolvedInvocationMetadata;
+	if (!managed) {
+		// Before any sidecar is cleared: a refused resume must leave the session as it was.
+		try {
+			invocationMetadata = applyProviderExtensionResumeAuthority(launchMetadata, resolvedInvocationMetadata);
+		} catch (error) {
+			throw new ResumeRefusal("resume_denied", error instanceof Error ? error.message : String(error));
+		}
+	}
 	const resumedAutoExit = metadata.mode === "background" ? true : invocationMetadata?.autoExit ?? metadata.autoExit ?? true;
 	const resumedInvocationMetadata =
 		metadata.mode === "background" && invocationMetadata
 			? { ...invocationMetadata, autoExit: resumedAutoExit }
 			: invocationMetadata;
-	const shouldPersistInvocationMetadata = invocationMetadata && invocationMetadata !== invocationMetadataSource;
+	// Anchoring to the launch authority alone is not a new invocation to record.
+	const shouldPersistInvocationMetadata =
+		invocationMetadata && resolvedInvocationMetadata !== invocationMetadataSource;
 	const targetAgent = launchMetadata?.agent ?? metadata.agent ?? caller.agent;
 	const definitionMetadata = launchMetadata ?? invocationMetadataSource;
 	const targetCwd = definitionMetadata ? getResumeDefinitionCwd(definitionMetadata) : process.cwd();
@@ -560,7 +572,7 @@ async function resumeSubagentSessionWithoutWidth(
 		}
 	}
 
-	if (shouldPersistInvocationMetadata) {
+	if (shouldPersistInvocationMetadata && invocationMetadata) {
 		if (invocationMetadata.modelSource === "resume-override") {
 			writeSubagentModelStateEntries(sessionFile, invocationMetadata);
 		}

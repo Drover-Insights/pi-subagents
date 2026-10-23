@@ -64,6 +64,13 @@ export async function coordinateSubagentLaunch(
 	const noSession = resolveSubagentNoSession(prepared.agentDefs);
 	const noSessionSeedMode = noSession ? getNoSessionSeedMode(sessionMode) : null;
 	const directTask = sessionMode === "fork" || noSessionSeedMode === "fork";
+	// Resume rebuilds a provider-extensions child only from recorded launch
+	// authority, and a standalone child records none. Refuse before seeding.
+	if (prepared.providerExtensionAuthority && sessionMode === "standalone") {
+		throw new Error(
+			`Agent ${params.agent} declares provider-extensions, which needs a session-mode that records launch metadata (lineage-only or fork), not ${sessionMode}.`,
+		);
+	}
 	const { seedMode, boundarySystemPrompt } = seedPreparedSubagentSession(
 		prepared,
 		params,

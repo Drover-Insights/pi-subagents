@@ -3,6 +3,7 @@ import { basename, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { loadCanonicalPolicy } from "../routing/canonical-policy.ts";
 import { normalizeVerifierModelRef } from "../vf/model-ref.ts";
+import { type ProviderExtensionEntry, parseProviderExtensions } from "./provider-extensions.ts";
 
 export interface AgentDefaults {
 	enabled?: boolean;
@@ -13,6 +14,8 @@ export interface AgentDefaults {
 	skills?: string;
 	injectSkills?: string;
 	extensions?: string;
+	/** `provider-extensions`: sources loaded only when the child's provider matches exactly. */
+	providerExtensions?: ProviderExtensionEntry[];
 	thinking?: string;
 	denyTools?: string;
 	spawning?: true | string[] | false;
@@ -153,6 +156,11 @@ function parseAgentDefinition(
 
 	const systemPromptRaw = get("system-prompt");
 	const extensionsRaw = get("extensions");
+	const providerExtensions = parseProviderExtensions(
+		getBlock("provider-extensions"),
+		hasKey("provider-extensions"),
+		path,
+	);
 	const injectSkillsRaw = get("inject-skills");
 	const flagsRaw = get("flags");
 	const parentClosePolicyRaw = get("parent-close-policy");
@@ -179,6 +187,7 @@ function parseAgentDefinition(
 		skills: get("skills"),
 		injectSkills: injectSkillsRaw,
 		extensions: extensionsRaw,
+		...(providerExtensions !== undefined ? { providerExtensions } : {}),
 		thinking: get("thinking"),
 		denyTools: get("deny-tools"),
 		spawning,

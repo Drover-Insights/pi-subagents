@@ -2,7 +2,7 @@ import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { traceSubagentLaunch } from "../launch/trace.ts";
 import type { PollResult } from "../mux/poll.ts";
 import { isZellijSurfaceLive } from "../mux/zellij-runtime.ts";
-import { consumeSubagentExitSignal, getMuxBackend, pollForExit } from "../mux.ts";
+import { consumeSubagentExitSignal, getMuxBackend, pollForExit, readScreenAsync } from "../mux.ts";
 import { hasSubagentExitSidecar } from "../session/exit-sidecar.ts";
 import { findLastSubagentOutputWithSource, getEntryCount, getNewEntries } from "../session/session.ts";
 import { writeSubagentTimeoutSidecar } from "../session/timeout-sidecar.ts";
@@ -284,7 +284,13 @@ async function watchInteractiveGeneration(
 			return { kind: "restart" };
 		}
 		const elapsed = Math.floor((Date.now() - startTime) / 1000);
-		const { summary, summarySource } = getSummary(running, pollResult);
+		const { summary: sessionSummary, summarySource } = getSummary(running, pollResult);
+		// A provider-extensions child that failed before writing anything printed
+		// its startup diagnostic only to its pane; carry it to the parent.
+		const summary =
+			pollResult.exitCode !== 0 && summarySource === "runtime" && running.launchMetadata?.providerExtensionAuthority
+				? appendStartupDiagnostic(sessionSummary, await readScreenAsync(surface, 60).catch(() => undefined))
+				: sessionSummary;
 		const errorMessage = pollResult.reason === "error" ? pollResult.errorMessage : undefined;
 		const finalContextUsage = resolveFinalContextUsage(running, pickFinalUsageSource(pollResult, exitSignal));
 		const timeoutFields = recordTimeoutOutcome(running, pollResult);
@@ -387,6 +393,17 @@ function buildInteractiveCancellationResult(running: RunningSubagent): SubagentR
 		error: "cancelled",
 		...(running.timeoutWrapUp ? { timeoutWrapUp: running.timeoutWrapUp } : {}),
 	};
+}
+
+/** The summary followed by the last nonblank lines of the child's pane, when there are any. */
+export function appendStartupDiagnostic(summary: string, screen: string | undefined): string {
+	const tail = (screen ?? "")
+		.split("\n")
+		.map((line) => line.trimEnd())
+		.filter((line) => line.trim() !== "")
+		.slice(-30)
+		.join("\n");
+	return tail ? `${summary}\n\n${tail}` : summary;
 }
 
 function getSummary(
