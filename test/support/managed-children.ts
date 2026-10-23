@@ -24,6 +24,8 @@ export function managedLaunchHarness(
 		spawnChild?: () => ChildProcess;
 		/** A standalone session: nothing seeds the file before the child writes it. */
 		standalone?: boolean;
+		/** Runs once the child exists, before its launch returns, as the runtime registers it. */
+		onLaunched?: (running: RunningSubagent) => void | Promise<void>;
 	} = {},
 ) {
 	const cwd = options.cwd ?? realpathSync(mkdtempSync(join(tmpdir(), "managed-cwd-")));
@@ -71,6 +73,7 @@ export function managedLaunchHarness(
 		};
 		if (running.launchMetadata && !options.standalone) writeSubagentLaunchMetadataEntry(sessionFile, running.launchMetadata);
 		launched.push(running);
+		await options.onLaunched?.(running);
 		return running;
 	};
 	const watch = async (): Promise<SubagentResult> => result;
@@ -97,9 +100,12 @@ export function managedLaunchHarness(
 		probeSandbox: () => ({ status: "available" }),
 		probeWriterConfinement: () => ({ status: "available" }),
 	};
-	const run = async (child: Record<string, unknown>, launchId = "dispatch-1") => {
-		const phase = await launchSubagentEntries(
-			[{ child: child as unknown as SubagentParamsInput, agentDefs: runtime.loadAgentDefaults(child.agent as string, cwd) }],
+	const launchPhase = (children: Record<string, unknown>[], launchId = "dispatch-1") =>
+		launchSubagentEntries(
+			children.map((child) => ({
+				child: child as unknown as SubagentParamsInput,
+				agentDefs: runtime.loadAgentDefaults(child.agent as string, cwd),
+			})),
 			{
 				launchId,
 				ctx: { hasUI: false, cwd, sessionManager: {}, model: { provider: "openai-codex", id: "gpt-6-sol" } } as never,
@@ -108,10 +114,12 @@ export function managedLaunchHarness(
 				forceSynchronous: false,
 			},
 		);
+	const run = async (child: Record<string, unknown>, launchId = "dispatch-1") => {
+		const phase = await launchPhase([child], launchId);
 		if (phase.status !== "launched") throw new Error(`launch was not committed: ${JSON.stringify(phase)}`);
 		return phase.launched[0];
 	};
-	return { run, launched, cwd };
+	return { run, launchPhase, launched, cwd };
 }
 
 /** A fake `pi` that records its arguments, one per line, and its environment. */

@@ -1,3 +1,4 @@
+import "./support/pilot-isolation.ts";
 import "./auto-exit.test.ts";
 import "./support/temp-root.test.ts";
 import "./session/session.test.ts";
@@ -90,6 +91,7 @@ import "./runtime/timeout-budget.test.ts";
 import "./runtime/timeout-wrap-up.test.ts";
 import "./runtime/managed-child-requests.test.ts";
 import "./runtime/managed-resume.test.ts";
+import "./runtime/pilot-isolation.test.ts";
 import "./runtime/managed-lifecycle.test.ts";
 import "./runtime/managed-recovery.test.ts";
 import "./runtime/timeout-result-delivery.test.ts";

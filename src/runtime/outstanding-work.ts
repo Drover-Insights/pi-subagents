@@ -1,4 +1,5 @@
 import type { RunningSubagent } from "../types.ts";
+import { noteChildUntracked } from "./pilot-isolation.ts";
 
 /** Runtime-owned work: running children plus reports awaiting a settled continuation. */
 class OutstandingWork {
@@ -72,11 +73,14 @@ class RunningWorkMap extends Map<string, RunningSubagent> {
 		return this;
 	}
 	override delete(id: string): boolean {
+		const running = super.get(id);
 		const removed = super.delete(id);
+		if (running) noteChildUntracked(running);
 		if (removed) this.changed();
 		return removed;
 	}
 	override clear(): void {
+		for (const running of super.values()) noteChildUntracked(running);
 		super.clear();
 		this.changed();
 	}
