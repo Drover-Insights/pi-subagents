@@ -98,6 +98,8 @@ export interface PersistedSubagentLaunchMetadata {
 const SUBAGENT_LAUNCH_METADATA_CUSTOM_TYPE = "pi-subagents_launch_metadata";
 /** A fork seed's copy of its parent's launch metadata, which no reader treats as this session's. */
 const INHERITED_LAUNCH_METADATA_CUSTOM_TYPE = "pi-subagents_inherited_launch_metadata";
+/** A fork seed's contentless stand-in for a parent roster reminder, kept so its id stays in the branch. */
+const INHERITED_ROSTER_CUSTOM_TYPE = "pi-subagents_inherited_roster";
 
 /**
  * Generate a unique session file path for a subagent.
@@ -169,26 +171,28 @@ export function seedSubagentSessionFile(
 			writeHeaderOnlySubagentSessionFile(childSessionFile, cwd, parentSessionFile, seedOptions?.sessionName);
 			return;
 		}
-		// Filter roster reminders out of the inherited branch, then re-chain the
-		// surviving entries. The parent's own launch metadata is kept under another
-		// type: resume reads the first launch entry as this child's grants, so it
-		// must not count, but a compaction may name its id as the first kept entry. getBranch walks parentId links, so dropping an entry
-		// without re-linking leaves the next entry pointing at a missing id and
-		// silently truncates the fork's inherited context at that point.
-		const rawBranch = parentManager.getBranch(leafId);
-		const branch: Array<Record<string, unknown>> = [];
-		let prevId: string | null = null;
-		for (const entry of rawBranch) {
-			const customType = (entry as { customType?: unknown }).customType;
-			if (customType === "subagent_roster") continue;
-			const e = entry as unknown as Record<string, unknown> & { id?: unknown; parentId?: unknown };
-			branch.push({
-				...e,
-				...(customType === SUBAGENT_LAUNCH_METADATA_CUSTOM_TYPE ? { customType: INHERITED_LAUNCH_METADATA_CUSTOM_TYPE } : {}),
-				...(typeof e.id === "string" ? { parentId: prevId } : {}),
-			});
-			if (typeof e.id === "string") prevId = e.id;
-		}
+		// Keep every inherited entry's id and parent link: a compaction may name
+		// any of them as its first kept entry, and a missing one silently drops the
+		// kept turns from the fork's context. Roster reminders become contentless
+		// non-context entries so the child never sees the parent's roster. The
+		// parent's own launch metadata is kept under another type: resume reads the
+		// first launch entry as this child's grants, so it must not count.
+		const branch = parentManager.getBranch(leafId).map((entry): Record<string, unknown> => {
+			const e = entry as unknown as Record<string, unknown>;
+			if (e.customType === "subagent_roster") {
+				return {
+					type: "custom",
+					customType: INHERITED_ROSTER_CUSTOM_TYPE,
+					id: e.id,
+					parentId: e.parentId,
+					timestamp: e.timestamp,
+				};
+			}
+			if (e.customType === SUBAGENT_LAUNCH_METADATA_CUSTOM_TYPE) {
+				return { ...e, customType: INHERITED_LAUNCH_METADATA_CUSTOM_TYPE };
+			}
+			return e;
+		});
 		if (branch.length === 0) {
 			writeHeaderOnlySubagentSessionFile(childSessionFile, cwd, parentSessionFile, seedOptions?.sessionName);
 			return;
