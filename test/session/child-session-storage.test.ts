@@ -1,3 +1,4 @@
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { ChildSessionStorage } from "../../src/session/child-session-storage.ts";
 import type { PersistedSubagentLaunchMetadata } from "../../src/session/session-files.ts";
 import {
@@ -100,9 +101,33 @@ describe("child session storage", () => {
 
 		const seeded = readFileSync(child, "utf8");
 		assert.doesNotMatch(seeded, /subagent_roster/);
+		assert.doesNotMatch(seeded, /hidden agent names/);
 	});
 
-	it("re-chains parentId when a roster sits mid-branch so no context is truncated", () => {
+	it("keeps a parent compaction's kept turns when its first kept entry is a roster", () => {
+		const dir = createTestDir();
+		const parent = join(dir, "parent-compacted.jsonl");
+		const child = join(dir, "child-compacted.jsonl");
+		const entries = [
+			SESSION_HEADER,
+			{ type: "message", id: "m1", parentId: null, message: { role: "user", content: "summarized turn" } },
+			{ type: "custom_message", customType: "subagent_roster", id: "r1", parentId: "m1", content: "hidden agent names" },
+			{ type: "message", id: "m2", parentId: "r1", message: { role: "user", content: "kept turn" } },
+			{ type: "compaction", id: "c1", parentId: "m2", summary: "compacted history", firstKeptEntryId: "r1", tokensBefore: 10 },
+			{ type: "message", id: "m3", parentId: "c1", message: { role: "user", content: "after compaction" } },
+		];
+		writeFileSync(parent, `${entries.map((e) => JSON.stringify(e)).join("\n")}\n`);
+
+		new ChildSessionStorage(child).seed("fork", parent, dir, { activeLeafId: "m3" });
+
+		const context = SessionManager.open(child, undefined, dir).buildSessionContext();
+		const texts = context.messages.map((m) => JSON.stringify(m));
+		assert.ok(texts.some((t) => t.includes("kept turn")), "kept turn survives the fork seed");
+		assert.ok(texts.some((t) => t.includes("after compaction")));
+		assert.ok(!texts.some((t) => t.includes("hidden agent names")), "roster stays out of child context");
+	});
+
+	it("keeps a mid-branch roster's id and link as a non-context entry so no context is truncated", () => {
 		const dir = createTestDir();
 		const parent = join(dir, "parent-mid.jsonl");
 		const child = join(dir, "child-mid.jsonl");
@@ -117,9 +142,11 @@ describe("child session storage", () => {
 
 		const entries = readFileSync(child, "utf8").trim().split("\n").map((l) => JSON.parse(l));
 		const byId = new Map(entries.filter((e) => e.id).map((e) => [e.id, e]));
-		assert.ok(!byId.has("r1"), "roster stripped");
-		// m2 must be re-pointed at m1 (not the dropped r1), m3 at m2 — the walk reaches m1.
-		assert.equal(byId.get("m2")?.parentId, "m1");
+		const kept = byId.get("r1");
+		assert.equal(kept?.type, "custom", "roster becomes a non-context entry");
+		assert.equal(kept?.parentId, "m1");
+		assert.equal(kept?.content, undefined, "roster content stripped");
+		assert.equal(byId.get("m2")?.parentId, "r1");
 		assert.equal(byId.get("m3")?.parentId, "m2");
 		// Every entry's parentId resolves to a retained entry (or null) — no dangling refs.
 		for (const e of byId.values()) {

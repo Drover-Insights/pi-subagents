@@ -224,18 +224,17 @@ describe("fork session launch behavior", () => {
 			messages.map((entry) => entry.id),
 			["user-001", "asst-001", "asst-002", "tool-001", "asst-003", "asst-004", "asst-005", "asst-006"],
 		);
-		// Roster entries are dropped from the inherited context, and orphaned
+		// Roster content is dropped from the inherited context, and orphaned
 		// tool calls are preserved verbatim: pi-ai's transformMessages synthesizes
 		// a "No result provided" toolResult for them at the provider boundary.
 		assert.equal(JSON.stringify(seeded).includes("subagent_131"), true);
 		assert.equal(JSON.stringify(seeded).includes("subagent_137"), true);
 		assert.equal(JSON.stringify(seeded).includes("subagent_kill_70"), true);
-		assert.equal(JSON.stringify(seeded).includes("roster-001"), false);
+		assert.equal(JSON.stringify(seeded).includes("Sub-agents: bob, alice"), false);
 
-		// The full parentId chain must be walkable from the last seeded entry:
-		// dropping an entry must re-link its successor, or the child's inherited
-		// context silently truncates at the stale link.
-		const byId = new Map(messages.map((entry: any) => [entry.id, entry]));
+		// The full parentId chain must be walkable from the last seeded entry,
+		// or the child's inherited context silently truncates at a stale link.
+		const byId = new Map(seeded.filter((entry) => entry.id).map((entry) => [entry.id, entry]));
 		const visited: string[] = [];
 		let cursor: any = messages[messages.length - 1];
 		while (cursor) {
@@ -244,7 +243,7 @@ describe("fork session launch behavior", () => {
 		}
 		assert.deepEqual(
 			visited,
-			["asst-006", "asst-005", "asst-004", "asst-003", "tool-001", "asst-002", "asst-001", "user-001"],
+			["asst-006", "roster-001", "asst-005", "asst-004", "asst-003", "tool-001", "asst-002", "asst-001", "user-001"],
 		);
 	});
 
