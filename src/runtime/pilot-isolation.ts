@@ -4,9 +4,14 @@
  * pilot attempt and an unmanaged child at the same time.
  *
  * The parent's record of live children is `runningSubagents`, plus the
- * in-flight launches this module holds and the unmanaged children that left
- * that record before their exit was proven. A child whose liveness cannot be
+ * in-flight launches this module holds and the pilot children that left that
+ * record before their exit was proven. A child whose liveness cannot be
  * checked counts as running.
+ *
+ * An unmanaged child can start processes the parent never sees and can forge
+ * any proof of its own exit, so once this Pi process has run one it refuses
+ * every later pilot launch and pilot resume until Pi restarts. The taint lives
+ * on `globalThis` because Pi re-imports extension modules on reload.
  */
 import { isCandidateGroupAlive, isTerminalRunState, readVerifiedRunManifest } from "../vf/run/types.ts";
 import type { RunningSubagent } from "../types.ts";
@@ -30,8 +35,19 @@ type ChildRecord = Pick<
 >;
 
 const inFlight = new Set<Hold>();
-/** Pilot and unmanaged children the parent stopped tracking before their exit was proven. */
+/** Pilot children the parent stopped tracking before their exit was proven. */
 const lingering = new Set<ChildRecord>();
+
+const TAINT_KEY = Symbol.for("pi-subagents/pilot-isolation-tainted");
+
+/** Record that this Pi process has run an unmanaged child; nothing but a restart clears it. */
+export function noteUnmanagedChildRan(): void {
+	(globalThis as Record<PropertyKey, unknown>)[TAINT_KEY] = true;
+}
+
+function isTainted(): boolean {
+	return Boolean((globalThis as Record<PropertyKey, unknown>)[TAINT_KEY]);
+}
 
 /** A launch or child without managed routing evidence counts as unmanaged, which fails closed. */
 export function isolationClassOf(
@@ -70,9 +86,9 @@ function isProvenGone(running: ChildRecord): boolean {
 	return child.pid === undefined || !isCandidateGroupAlive(child.pid);
 }
 
-/** The parent dropped `running` from its record; keep a pilot or unmanaged child counted until it is proven gone. */
+/** The parent dropped `running` from its record; keep a pilot child counted until it is proven gone. */
 export function noteChildUntracked(running: ChildRecord): void {
-	if (classifyRunningChild(running) !== "managed" && !isProvenGone(running)) lingering.add(running);
+	if (classifyRunningChild(running) === "pilot" && !isProvenGone(running)) lingering.add(running);
 }
 
 function describe(running: ChildRecord): string {
@@ -114,17 +130,24 @@ export function acquirePilotIsolation(
 	if (pilots.length === 0 && unmanaged.length === 0) return { status: "held", release: () => {} };
 	const hold: Hold = pilots.length > 0 ? { class: "pilot", names: pilots } : { class: "unmanaged", names: unmanaged };
 	const found = conflicts(hold.class, tracked);
+	if (hold.class === "pilot" && (isTainted() || found.length > 0)) {
+		// Waiting for an unmanaged child never helps here, so the refusal names it without promising that.
+		const running = found.length > 0 ? ` Still running: ${found.join(", ")}.` : "";
+		return {
+			status: "refused",
+			message: `a pilot launch or resume is refused because this Pi process has run an unmanaged child, which may have left processes that can still write the pilot attempt store; restart Pi to run pilot launches.${running}`,
+		};
+	}
 	if (found.length > 0) {
-		const message =
-			hold.class === "pilot"
-				? `a pilot launch waits until no unmanaged child of this session runs; still running: ${found.join(", ")}`
-				: `an unmanaged launch waits until no pilot attempt of this session is open; still open: ${found.join(", ")}`;
+		const message = `an unmanaged launch waits until no pilot attempt of this session is open; still open: ${found.join(", ")}`;
 		const unproven = found.some((entry) => entry.endsWith("exit not proven"));
 		const recovery = unproven
 			? " A child whose exit is not proven keeps counting until its process group is gone or its verified run ended; a pane child keeps counting until Pi restarts."
 			: "";
 		return { status: "refused", message: `${message}.${recovery}` };
 	}
+	// Before spawn, so a launch that later fails still taints.
+	if (hold.class === "unmanaged") noteUnmanagedChildRan();
 	inFlight.add(hold);
 	return { status: "held", release: () => inFlight.delete(hold) };
 }
@@ -132,4 +155,5 @@ export function acquirePilotIsolation(
 export function resetPilotIsolationForTest(): void {
 	inFlight.clear();
 	lingering.clear();
+	delete (globalThis as Record<PropertyKey, unknown>)[TAINT_KEY];
 }
