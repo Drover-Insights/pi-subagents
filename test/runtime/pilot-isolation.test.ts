@@ -7,10 +7,14 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { InteractiveLaunchError } from "../../src/launch/interactive.ts";
 import { readPilotCase } from "../../src/routing/pilot-attempt-store.ts";
 import { ResumeRefusal } from "../../src/runtime/resume-refusal.ts";
+import { resetPilotIsolationForTest } from "../../src/runtime/pilot-isolation.ts";
 import { resumeSubagentSession } from "../../src/runtime/resume-service.ts";
 import { resetRuntimeStateForTest, runningSubagents } from "../../src/runtime/state.ts";
+import { shutdownSubagentsForTest } from "../../src/runtime/wiring.ts";
 import type { SubagentLaunchPhase } from "../../src/tools/subagent-launch.ts";
 import type { RunningSubagent } from "../../src/types.ts";
+import { adoptVerifiedRuns } from "../../src/vf/run/adopt.ts";
+import { verifiedRunsBaseDir } from "../../src/vf/run/launch.ts";
 import { assert } from "../support/index.ts";
 import "../support/ambient-spawn-grant.ts";
 import { capturePiInvocation, managedLaunchHarness, resumeRuntime, writeManagedDefinitions } from "../support/managed-children.ts";
@@ -51,6 +55,15 @@ async function endGroup(child: ChildProcess): Promise<void> {
 }
 
 let exited: ChildProcess;
+
+/** Kill a process group that may already be gone. */
+function killGroup(pgid: number): void {
+	try {
+		process.kill(-pgid, "SIGKILL");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+	}
+}
 
 /** Track a child as the runtime does; a fake without a process gets one that already exited. */
 function register(running: RunningSubagent): void {
@@ -99,6 +112,18 @@ function unmanagedEntry(id: string, extra: Partial<RunningSubagent>): RunningSub
 	};
 }
 
+/** A dropped pilot child, as the parent records one; unmanaged children no longer linger. */
+function pilotEntry(id: string, extra: Partial<RunningSubagent>): RunningSubagent {
+	return unmanagedEntry(id, {
+		agent: "pilot-scout",
+		routing: { status: "managed", pilotCase: "scout-literal-1" } as RunningSubagent["routing"],
+		...extra,
+	});
+}
+
+/** The refusal a pilot launch gets once this process has run an unmanaged child. */
+const TAINTED = /this Pi process has run an unmanaged child.*restart Pi/s;
+
 /** A verified fan-out's run directory whose manifest reports `state` for candidates in `pgids`. */
 function verifiedRun(state: string, pgids: number[]): string {
 	const runDir = join(realpathSync(mkdtempSync(join(tmpdir(), "isolation-vf-"))), "run-1");
@@ -135,7 +160,7 @@ describe("pilot attempts and unmanaged children never run together", () => {
 		resetRuntimeStateForTest(() => {});
 	});
 
-	it("refuses a pilot launch while an unmanaged child runs, and allows it once the child exits", async () => {
+	it("refuses a pilot launch while an unmanaged child runs, and still refuses it after the child exits", async () => {
 		const unmanaged = await managedLaunchHarness({ spawnChild: liveGroup, onLaunched: register }).run(helper);
 		const pilots = managedLaunchHarness({ onLaunched: register });
 
@@ -143,13 +168,34 @@ describe("pilot attempts and unmanaged children never run together", () => {
 
 		assert.match(message, /free-helper/);
 		assert.ok(message.includes(unmanaged.id), message);
+		// Waiting for the child never helps, so the refusal must not promise it does.
+		assert.match(message, TAINTED);
+		assert.doesNotMatch(message, /waits until/);
 		assert.equal(pilots.launched.length, 0);
 		assert.deepEqual(reservations(), [], "a refused pilot launch reserves no attempt");
 
 		await endGroup(unmanaged.childProcess as ChildProcess);
 		runningSubagents.delete(unmanaged.id);
 
-		assert.equal((await pilots.launchPhase([scout], "dispatch-2")).status, "launched");
+		assert.match(refusal(await pilots.launchPhase([scout], "dispatch-2")), TAINTED);
+		assert.equal(pilots.launched.length, 0);
+		assert.deepEqual(reservations(), [], "a tainted refusal reserves no attempt");
+	});
+
+	it("refuses a pilot beside an untainted unmanaged record without promising that waiting helps", async () => {
+		register(unmanagedEntry("direct", { childProcess: liveGroup() }));
+
+		const message = refusal(await managedLaunchHarness({ onLaunched: register }).launchPhase([scout]));
+
+		assert.ok(message.includes("direct-name (direct)"), message);
+		assert.match(message, TAINTED);
+		assert.doesNotMatch(message, /waits until/);
+		assert.deepEqual(reservations(), []);
+	});
+
+	it("admits pilot launches in a process that never ran an unmanaged child", async () => {
+		const pilots = managedLaunchHarness({ onLaunched: register });
+		assert.equal((await pilots.launchPhase([scout])).status, "launched");
 	});
 
 	it("refuses an unmanaged launch while a pilot attempt is open, and allows it once the attempt closes", async () => {
@@ -166,33 +212,80 @@ describe("pilot attempts and unmanaged children never run together", () => {
 		assert.equal((await helpers.launchPhase([helper], "dispatch-3")).status, "launched");
 	});
 
-	it("keeps blocking pilot launches while an unmanaged child's exit is not proven", async () => {
-		const unmanaged = await managedLaunchHarness({ spawnChild: liveGroup, onLaunched: register }).run(helper);
-		// The parent dropped its record, but the child's process group still runs.
-		runningSubagents.delete(unmanaged.id);
-		const pilots = managedLaunchHarness({ onLaunched: register });
+	it("keeps refusing pilot launches after an unmanaged child left a setsid descendant, even once it exits", async () => {
+		const dir = realpathSync(mkdtempSync(join(tmpdir(), "isolation-setsid-")));
+		const pidFile = join(dir, "pid");
+		const leaver = () => {
+			const child = spawn("sh", ["-c", `setsid sleep 30 </dev/null >/dev/null 2>&1 & echo $! > '${pidFile}'`], {
+				detached: true,
+				stdio: "ignore",
+			});
+			groups.push(child);
+			return child;
+		};
+		const unmanaged = await managedLaunchHarness({ spawnChild: leaver, onLaunched: register }).run(helper);
+		let descendant = 0;
+		try {
+			const child = unmanaged.childProcess as ChildProcess;
+			if (child.exitCode === null && child.signalCode === null) await once(child, "exit");
+			descendant = Number(readFileSync(pidFile, "utf8"));
+			assert.ok(descendant > 0, "the setsid descendant started");
+			// The child exited cleanly; its own process group is empty.
+			runningSubagents.delete(unmanaged.id);
 
-		const message = refusal(await pilots.launchPhase([scout]));
+			assert.match(refusal(await managedLaunchHarness({ onLaunched: register }).launchPhase([scout])), TAINTED);
 
-		assert.ok(message.includes(unmanaged.id), message);
+			killGroup(descendant);
+			descendant = 0;
 
-		await endGroup(unmanaged.childProcess as ChildProcess);
-
-		assert.equal((await pilots.launchPhase([scout], "dispatch-2")).status, "launched");
+			assert.match(refusal(await managedLaunchHarness({ onLaunched: register }).launchPhase([scout], "dispatch-2")), TAINTED);
+			assert.deepEqual(reservations(), []);
+		} finally {
+			if (descendant > 0) killGroup(descendant);
+		}
 	});
 
-	it("counts a dropped child whose liveness cannot be checked as running", async () => {
-		const handleless = unmanagedEntry("nohandle", {});
-		const pane = unmanagedEntry("openpane", { mode: "interactive", surface: "%9" });
+	it("taints on an unmanaged launch whose spawn failed", async () => {
+		const helpers = managedLaunchHarness({
+			onLaunched: () => {
+				throw new Error("spawn failed");
+			},
+		});
+		await assert.rejects(helpers.launchPhase([helper]), /spawn failed/);
+
+		assert.match(refusal(await managedLaunchHarness({ onLaunched: register }).launchPhase([scout], "dispatch-2")), TAINTED);
+		assert.deepEqual(reservations(), []);
+	});
+
+	it("keeps the taint across a session shutdown and a module reload; only the reset clears it", async () => {
+		const unmanaged = await managedLaunchHarness().run(helper);
+		runningSubagents.delete(unmanaged.id);
+		await shutdownSubagentsForTest();
+
+		assert.match(refusal(await managedLaunchHarness({ onLaunched: register }).launchPhase([scout])), TAINTED);
+		// Pi re-imports an extension's modules on /reload and on a cwd change.
+		const href = new URL("../../src/runtime/pilot-isolation.ts?reloaded=1", import.meta.url).href;
+		const reloaded = await import(href);
+		const held = reloaded.acquirePilotIsolation([{ name: "route-scout", class: "pilot" }], []);
+		assert.equal(held.status, "refused");
+		assert.match(held.message, TAINTED);
+
+		resetPilotIsolationForTest();
+
+		assert.equal((await managedLaunchHarness({ onLaunched: register }).launchPhase([scout], "dispatch-2")).status, "launched");
+	});
+
+	it("counts a dropped pilot child whose liveness cannot be checked as open", async () => {
+		const handleless = pilotEntry("nohandle", {});
+		const pane = pilotEntry("openpane", { mode: "interactive", surface: "%9" });
 		for (const entry of [handleless, pane]) {
 			runningSubagents.set(entry.id, entry);
 			runningSubagents.delete(entry.id);
 		}
 
-		const message = refusal(await managedLaunchHarness({ onLaunched: register }).launchPhase([scout]));
+		const message = refusal(await managedLaunchHarness({ onLaunched: register }).launchPhase([helper]));
 
 		assert.ok(message.includes("nohandle") && message.includes("openpane"), message);
-		assert.deepEqual(reservations(), []);
 	});
 
 	it("refuses either kind while the other's launch is still in flight", async () => {
@@ -268,12 +361,12 @@ describe("pilot attempts and unmanaged children never run together", () => {
 	});
 
 	it("proves a pane child gone only when its pane closed without a failed close", async () => {
-		register(unmanagedEntry("closed", { mode: "interactive" }));
-		register(unmanagedEntry("failedclose", { mode: "interactive", timeoutKillFailed: true }));
+		register(pilotEntry("closed", { mode: "interactive" }));
+		register(pilotEntry("failedclose", { mode: "interactive", timeoutKillFailed: true }));
 		runningSubagents.delete("closed");
 		runningSubagents.delete("failedclose");
 
-		const message = refusal(await managedLaunchHarness({ onLaunched: register }).launchPhase([scout]));
+		const message = refusal(await managedLaunchHarness({ onLaunched: register }).launchPhase([helper]));
 
 		assert.ok(message.includes("failedclose") && !message.includes("closed-name ("), message);
 	});
@@ -281,71 +374,162 @@ describe("pilot attempts and unmanaged children never run together", () => {
 	it("proves a verified fan-out gone only when its run is terminal and no candidate group lives", async () => {
 		const group = liveGroup();
 		const entries = [
-			unmanagedEntry("runningrun", { verifiedRunDir: verifiedRun("running", []) }),
-			unmanagedEntry("livecandidate", { verifiedRunDir: verifiedRun("failed", [group.pid as number]) }),
-			unmanagedEntry("unreadable", { verifiedRunDir: join(tmpdir(), "no-such-verified-run") }),
-			unmanagedEntry("finished", { verifiedRunDir: verifiedRun("completed", []) }),
+			pilotEntry("runningrun", { verifiedRunDir: verifiedRun("running", []) }),
+			pilotEntry("livecandidate", { verifiedRunDir: verifiedRun("failed", [group.pid as number]) }),
+			pilotEntry("unreadable", { verifiedRunDir: join(tmpdir(), "no-such-verified-run") }),
+			pilotEntry("finished", { verifiedRunDir: verifiedRun("completed", []) }),
 		];
 		for (const entry of entries) {
 			register(entry);
 			runningSubagents.delete(entry.id);
 		}
-		const pilots = managedLaunchHarness({ onLaunched: register });
 
-		const message = refusal(await pilots.launchPhase([scout]));
+		const message = refusal(await managedLaunchHarness({ onLaunched: register }).launchPhase([helper]));
 
 		for (const id of ["runningrun", "livecandidate", "unreadable"]) assert.ok(message.includes(id), message);
 		assert.ok(!message.includes("finished"), message);
 	});
 
-	it("keeps children counted when the parent clears its whole record", async () => {
-		const unmanaged = await managedLaunchHarness({ spawnChild: liveGroup, onLaunched: register }).run(helper);
+	it("keeps a pilot child counted when the parent clears its whole record", async () => {
+		const pilot = await managedLaunchHarness({ spawnChild: liveGroup, onLaunched: register }).run(scout);
 		runningSubagents.clear();
 
-		const message = refusal(await managedLaunchHarness({ onLaunched: register }).launchPhase([scout]));
+		const message = refusal(await managedLaunchHarness({ onLaunched: register }).launchPhase([helper], "dispatch-2"));
 
-		assert.ok(message.includes(unmanaged.id), message);
-		assert.match(message, /until Pi restarts/);
+		assert.ok(message.includes(pilot.id), message);
+		assert.match(message, /route-scout.*exit not proven/s);
 	});
 
-	// Root ignores the read-only mode this test uses to fail the resume after its child started.
-	it("keeps counting a resumed unmanaged child that started but was never tracked", { skip: process.getuid?.() === 0 }, async () => {
+	it("taints on a resumed unmanaged child", async () => {
 		const unmanaged = await managedLaunchHarness().run(helper);
-		const bin = realpathSync(mkdtempSync(join(tmpdir(), "isolation-sleeper-")));
-		const pidFile = join(bin, "pid");
-		process.env.PI_SUBAGENT_PI_COMMAND = join(bin, "sleeper");
-		writeFileSync(process.env.PI_SUBAGENT_PI_COMMAND, `#!/usr/bin/env bash\necho $$ > '${pidFile}'\nexec sleep 30\n`);
-		chmodSync(process.env.PI_SUBAGENT_PI_COMMAND, 0o755);
-		// The child starts, then persisting the model override into its session fails.
-		chmodSync(unmanaged.sessionFile, 0o444);
+		// A fresh process that only resumes the session.
+		resetPilotIsolationForTest();
+		const fakePi = process.env.PI_SUBAGENT_PI_COMMAND;
+		capturePiInvocation();
+		const runtime = resumeRuntime();
 
+		const resumed = await resumeSubagentSession({ sessionFile: unmanaged.sessionFile, task: "Continue." }, runtime);
+		runtime.runningSubagents.delete(resumed.id);
+		// A pilot receipt needs the standalone binary back.
+		process.env.PI_SUBAGENT_PI_COMMAND = fakePi;
+
+		assert.match(refusal(await managedLaunchHarness({ onLaunched: register }).launchPhase([scout])), TAINTED);
+	});
+
+	it("taints on an adopted verified run, observer or not", async () => {
+		const cwd = realpathSync(mkdtempSync(join(tmpdir(), "isolation-adopt-")));
+		mkdirSync(join(cwd, ".git"));
+		process.env.PI_ARTIFACT_PROJECT_ROOT = realpathSync(mkdtempSync(join(tmpdir(), "isolation-artifacts-")));
 		try {
-			await assert.rejects(
-				resumeSubagentSession({ sessionFile: unmanaged.sessionFile, task: "Go.", model: "openai-codex/gpt-6-sol" }, resumeRuntime()),
-			);
-			await until(() => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim() !== "");
+			const runDir = join(verifiedRunsBaseDir(cwd), "vf-runs", "run-adopted");
+			mkdirSync(runDir, { recursive: true });
+			const manifest = (state: string) =>
+				JSON.stringify({
+					version: 3,
+					runId: "run-adopted",
+					createdAt: new Date().toISOString(),
+					updatedAt: new Date().toISOString(),
+					state,
+					leaseId: "lease",
+					// A live supervisor, so adoption watches the run without respawning it.
+					lease: { pid: process.pid },
+					request: { kind: "verified-fanout", name: "fanout", title: "Fan-out", taskPrompt: "t", agent: "scout", sourceRepo: cwd, candidateCount: 1, candidates: [], parentSessionId: null },
+					candidates: [],
+					result: null,
+				});
+			writeFileSync(join(runDir, "manifest.json"), manifest("running"));
 
-			const message = refusal(await managedLaunchHarness({ onLaunched: register }).launchPhase([scout]));
-			assert.match(message, /free-helper.*exit not proven/s);
+			const outcomes = await adoptVerifiedRuns({ sendMessage: () => {} } as never, cwd, { sessionId: "observer" });
+			assert.equal(outcomes[0]?.action, "watching", JSON.stringify(outcomes));
+			// The run ends and the parent drops it, with its exit proven.
+			writeFileSync(join(runDir, "manifest.json"), manifest("completed"));
+			for (const running of [...runningSubagents.values()]) runningSubagents.delete(running.id);
+
+			assert.match(refusal(await managedLaunchHarness({ onLaunched: register }).launchPhase([scout])), TAINTED);
 		} finally {
-			const written = () => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim() !== "";
-			for (let attempt = 0; attempt < 200 && !written(); attempt++) await new Promise((resolve) => setTimeout(resolve, 5));
-			const pid = written() ? Number(readFileSync(pidFile, "utf8")) : 0;
-			if (pid > 0) process.kill(-pid, "SIGKILL");
+			delete process.env.PI_ARTIFACT_PROJECT_ROOT;
 		}
 	});
 
-	it("keeps counting an interactive launch whose pane exists but whose delivery failed", async () => {
-		const helpers = managedLaunchHarness({
+	it("taints at startup adoption before delivering earlier finished runs", async () => {
+		const cwd = realpathSync(mkdtempSync(join(tmpdir(), "isolation-adopt-gap-")));
+		mkdirSync(join(cwd, ".git"));
+		process.env.PI_ARTIFACT_PROJECT_ROOT = realpathSync(mkdtempSync(join(tmpdir(), "isolation-artifacts-")));
+		let release!: (persisted: boolean) => void;
+		const persisted = new Promise<boolean>((done) => {
+			release = done;
+		});
+		let adoption: Promise<unknown> | undefined;
+		try {
+			const write = (runId: string, state: string) => {
+				const runDir = join(verifiedRunsBaseDir(cwd), "vf-runs", runId);
+				mkdirSync(runDir, { recursive: true });
+				writeFileSync(
+					join(runDir, "manifest.json"),
+					JSON.stringify({
+						version: 3,
+						runId,
+						createdAt: new Date().toISOString(),
+						updatedAt: new Date().toISOString(),
+						state,
+						leaseId: "lease",
+						lease: { pid: process.pid },
+						request: { kind: "verified-fanout", name: runId, title: runId, taskPrompt: "t", agent: "scout", sourceRepo: cwd, candidateCount: 1, candidates: [], parentSessionId: "parent" },
+						candidates: [],
+						result: null,
+					}),
+				);
+			};
+			// Finished runs this session must receive, and one live run from an earlier Pi.
+			for (const runId of ["run-a-done", "run-b-done", "run-c-done"]) write(runId, "completed");
+			write("run-z-live", "running");
+
+			// Not awaited, as session_start starts it; each delivery waits on persistence.
+			adoption = adoptVerifiedRuns({ sendMessage: () => {} } as never, cwd, {
+				sessionId: "parent",
+				triggerTurn: false,
+				confirmPersisted: () => persisted,
+			});
+
+			assert.match(refusal(await managedLaunchHarness({ onLaunched: register }).launchPhase([scout])), TAINTED);
+		} finally {
+			release(false);
+			await adoption;
+			delete process.env.PI_ARTIFACT_PROJECT_ROOT;
+		}
+	});
+
+	it("refuses a pilot resume after an unmanaged child exited", async () => {
+		const pilot = await managedLaunchHarness().run(scout);
+		const unmanaged = await managedLaunchHarness().run(helper, "dispatch-2");
+		runningSubagents.delete(unmanaged.id);
+		const invocation = capturePiInvocation();
+		const before = JSON.stringify(reservations());
+
+		await assert.rejects(resumeSubagentSession({ sessionFile: pilot.sessionFile, task: "Continue." }, resumeRuntime()), (error) => {
+			assert.ok(error instanceof ResumeRefusal, String(error));
+			assert.match(error.message, /pilot_isolation/);
+			assert.match(error.message, TAINTED);
+			return true;
+		});
+
+		assert.equal(JSON.stringify(reservations()), before, "a refused pilot resume appends nothing to its attempt");
+
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		assert.equal(existsSync(invocation.args), false, "no child process may start");
+	});
+
+	it("keeps counting an interactive pilot launch whose pane exists but whose delivery failed", async () => {
+		const pilots = managedLaunchHarness({
 			onLaunched: () => {
 				throw new InteractiveLaunchError("%42", new Error("send-keys failed"));
 			},
 		});
-		await assert.rejects(helpers.launchPhase([helper]), /send-keys failed/);
+		await assert.rejects(pilots.launchPhase([scout]), /send-keys failed/);
 
-		const message = refusal(await managedLaunchHarness({ onLaunched: register }).launchPhase([scout], "dispatch-2"));
+		const message = refusal(await managedLaunchHarness({ onLaunched: register }).launchPhase([helper], "dispatch-2"));
 
-		assert.match(message, /free-helper.*exit not proven/s);
+		assert.match(message, /route-scout.*exit not proven/s);
 	});
 
 	it("refuses a pilot resume while an unmanaged child runs, appending nothing to its attempt", async () => {
@@ -366,8 +550,9 @@ describe("pilot attempts and unmanaged children never run together", () => {
 	});
 
 	it("refuses an unmanaged resume while a pilot attempt is open", async () => {
-		const unmanaged = await managedLaunchHarness().run(helper);
-		const pilot = await managedLaunchHarness().run(scout, "dispatch-2");
+		// The pilot first: once an unmanaged child ran, no pilot launches.
+		const pilot = await managedLaunchHarness().run(scout);
+		const unmanaged = await managedLaunchHarness().run(helper, "dispatch-2");
 		const runtime = resumeRuntime();
 		runtime.runningSubagents.set(pilot.id, pilot);
 		const invocation = capturePiInvocation();

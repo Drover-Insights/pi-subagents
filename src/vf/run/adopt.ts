@@ -1,6 +1,7 @@
 import { outstandingWork } from "../../runtime/outstanding-work.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { resolveArtifactProjectRoot } from "../../artifact-storage.ts";
+import { noteUnmanagedChildRan } from "../../runtime/pilot-isolation.ts";
 import { runningSubagents, moduleAbortController } from "../../runtime/state.ts";
 import {
 	claimSpawnWidthSlot,
@@ -67,7 +68,22 @@ export async function adoptVerifiedRuns(
 	} = {},
 ): Promise<AdoptedRunOutcome[]> {
 	const outcomes: AdoptedRunOutcome[] = [];
-	for (const runDir of listVerifiedRuns(verifiedRunsBaseDir(cwd))) {
+	const runDirs = listVerifiedRuns(verifiedRunsBaseDir(cwd));
+	// Before any await: a delivery below can wait, and a pilot admitted meanwhile would run beside a live run.
+	for (const runDir of runDirs) {
+		try {
+			const { manifest } = attachVerifiedRun(runDir);
+			if (
+				!isTerminalRunState(manifest.state) &&
+				resolveArtifactProjectRoot(manifest.request.sourceRepo) === resolveArtifactProjectRoot(cwd)
+			) {
+				noteUnmanagedChildRan();
+			}
+		} catch {
+			// foreign or unreadable entry; the loop below skips it too
+		}
+	}
+	for (const runDir of runDirs) {
 		let snapshot;
 		try {
 			snapshot = attachVerifiedRun(runDir);
@@ -132,6 +148,8 @@ export async function adoptVerifiedRuns(
 			outcomes.push({ runDir, runId: manifest.runId, action: "already-tracked" });
 			continue;
 		}
+		// An adopted run carries no routing evidence, so it counts as unmanaged, observer or not.
+		noteUnmanagedChildRan();
 		let respawned = false;
 		if (isVerifiedRunOrphaned(snapshot)) {
 			try {
